@@ -10,6 +10,25 @@ KDP Scout App helps self-publishers find profitable niches, trending keywords, a
 
 ---
 
+## 🚀 Installation — One Click, That's It
+
+**No prerequisites. No terminal. No configuration.**
+
+1. **Download** or clone this repository
+2. **Double-click `CLICK ME.bat`**
+3. ☕ Wait 2-5 minutes — everything is automatic
+
+The batch script handles **everything** for you:
+- ✅ Detects if Python is installed — downloads & installs it if not
+- ✅ Installs all dependencies (PyQt6, matplotlib, etc.)
+- ✅ Compiles the app into a standalone `.exe`
+- ✅ Creates a shortcut on your Desktop
+- ✅ Launches the app automatically
+
+**One click = one install = ready to use.** 🎯
+
+---
+
 ## 🎯 Features
 
 ### 5 Data Sources
@@ -33,48 +52,14 @@ KDP Scout App helps self-publishers find profitable niches, trending keywords, a
 
 ---
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- pip
-
-### Installation
-
-```bash
-git clone https://github.com/fable0301/kdp-scout-app.git
-cd kdp-scout-app
-pip install -r requirements.txt
-```
-
-### Run
-
-```bash
-python -m kdp_scout
-```
-
-Or on Windows:
-
-```bash
-run_kdp_scout.bat
-```
-
-### Build Executable (Windows)
-
-```bash
-pip install pyinstaller
-pyinstaller kdp_scout.spec
-```
-
-The executable will be in `dist/KDP Scout App/`.
-
----
-
 ## 📁 Project Structure
 
 ```
 kdp-scout-app/
+├── CLICK ME.bat                 ← Double-click to install & run
+├── requirements.txt
+├── kdp_scout_gui.py
+├── kdp_scout_gui.spec           # PyInstaller spec
 ├── kdp_scout/
 │   ├── __init__.py              # Version 0.4.0
 │   ├── __main__.py              # Entry point
@@ -90,9 +75,6 @@ kdp-scout-app/
 │       ├── main_window.py       # Main window with 5-source sidebar
 │       ├── pages/               # UI pages for each tool
 │       └── workers/             # Background workers (threading)
-├── requirements.txt
-├── run_kdp_scout.bat
-└── kdp_scout.spec               # PyInstaller spec
 ```
 
 ---
@@ -102,8 +84,8 @@ kdp-scout-app/
 All collectors use **`ThreadPoolExecutor`** for parallel fetching:
 - Amazon: concurrent keyword & BSR lookups
 - Google: parallel trend queries
-- Goodreads: 4 workers for GR scraping, 6 workers for Open Library API
-- Session reuse & rate limiting to avoid bans
+- Goodreads: 4 workers for scraping, 6 workers for Open Library API
+- Session reuse & smart rate limiting to avoid bans
 
 ---
 
