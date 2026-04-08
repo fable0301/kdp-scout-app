@@ -336,7 +336,6 @@ class MainWindow(QMainWindow):
         self._check_update_btn.setText("🔄 Checking...")
         self._check_update_btn.setEnabled(False)
         self._set_update_btn_class("update-check-btn")
-        self._update_ok_label.hide()
         self._check_update_btn.show()
 
         # Disconnect any old click handler and restore default
