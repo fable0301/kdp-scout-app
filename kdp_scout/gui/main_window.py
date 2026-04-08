@@ -30,6 +30,7 @@ GITHUB_ZIP_URL = (
     "https://github.com/hulyx/kdp-scout-app/archive/refs/heads/main.zip"
 )
 GITHUB_REPO_URL = "https://github.com/hulyx/kdp-scout-app"
+GITHUB_RELEASES_API_URL = "https://api.github.com/repos/hulyx/kdp-scout-app/releases/latest"
 
 
 def _load_logo_icon() -> QIcon:
@@ -39,27 +40,32 @@ def _load_logo_icon() -> QIcon:
 
 
 class UpdateCheckerThread(QThread):
-    update_available = pyqtSignal(str)
+    update_available = pyqtSignal(str, str)
     up_to_date = pyqtSignal()
     check_failed = pyqtSignal()
 
     def run(self):
         try:
             import urllib.request
+            import json
             from kdp_scout import __version__ as current_version
             req = urllib.request.Request(
-                GITHUB_RAW_VERSION_URL,
+                GITHUB_RELEASES_API_URL,
                 headers={"User-Agent": "KDP-Scout-App/update-checker"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                content = resp.read().decode("utf-8")
-            match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
-            if not match:
+                data = json.loads(resp.read().decode("utf-8"))
+            remote_version = data.get("tag_name", "").lstrip("v")
+            if not remote_version:
                 self.check_failed.emit()
                 return
-            remote_version = match.group(1)
+            exe_url = ""
+            for asset in data.get("assets", []):
+                if asset.get("name", "").endswith(".exe"):
+                    exe_url = asset.get("browser_download_url", "")
+                    break
             if remote_version != current_version:
-                self.update_available.emit(remote_version)
+                self.update_available.emit(remote_version, exe_url)
             else:
                 self.up_to_date.emit()
         except Exception:
@@ -133,6 +139,7 @@ class MainWindow(QMainWindow):
         }
         self._update_thread = None
         self._pending_version = None
+        self._pending_exe_url = ""
         self._setup_ui()
         self._setup_shortcuts()
         self._restore_last_page()
@@ -359,8 +366,9 @@ class MainWindow(QMainWindow):
         self._check_update_btn.style().unpolish(self._check_update_btn)
         self._check_update_btn.style().polish(self._check_update_btn)
 
-    def _on_update_available(self, new_version: str):
+    def _on_update_available(self, new_version: str, exe_url: str):
         self._pending_version = new_version
+        self._pending_exe_url = exe_url
         self._check_update_btn.setText(f"⬆ v{new_version} available!")
         self._set_update_btn_class("update-check-btn-available")
         self._check_update_btn.setEnabled(True)
@@ -369,7 +377,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._check_update_btn.clicked.connect(
-            lambda: self._do_update(new_version)
+            lambda: self._do_update(new_version, exe_url)
         )
 
     def _on_up_to_date(self):
@@ -395,11 +403,7 @@ class MainWindow(QMainWindow):
         self._set_update_btn_class("update-check-btn")
         self._check_update_btn.setEnabled(True)
 
-    def _do_update(self, new_version: str):
-        if getattr(sys, "frozen", False):
-            webbrowser.open(GITHUB_REPO_URL)
-            return
-
+    def _do_update(self, new_version: str, exe_url: str = ""):
         reply = QMessageBox.question(
             self,
             "Update Available",
@@ -408,8 +412,68 @@ class MainWindow(QMainWindow):
             "The app will restart automatically.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if getattr(sys, "frozen", False):
+            if not exe_url:
+                webbrowser.open(GITHUB_REPO_URL)
+                return
+            self._apply_frozen_update(new_version, exe_url)
+        else:
             self._apply_update(new_version)
+
+    def _apply_frozen_update(self, new_version: str, exe_url: str):
+        import urllib.request
+
+        current_exe = Path(sys.executable)
+        self._check_update_btn.setText("⬇ Downloading...")
+        self._check_update_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        try:
+            tmp_exe = Path(tempfile.mktemp(suffix=".exe"))
+            req = urllib.request.Request(
+                exe_url,
+                headers={"User-Agent": "KDP-Scout-App/updater"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                with open(tmp_exe, "wb") as f:
+                    f.write(resp.read())
+
+            bat_path = Path(tempfile.mktemp(suffix=".bat"))
+            bat_content = (
+                "@echo off\n"
+                f"title KDP Scout - Updating to v{new_version}...\n"
+                "timeout /t 2 /nobreak > NUL\n"
+                "echo Applying update...\n"
+                f'copy /y "{tmp_exe}" "{current_exe}"\n'
+                "if errorlevel 1 (\n"
+                "    echo Update failed - could not replace executable.\n"
+                "    pause\n"
+                "    del \"%~f0\"\n"
+                "    exit /b 1\n"
+                ")\n"
+                "echo Done! Restarting KDP Scout...\n"
+                f'start \"\" "{current_exe}"\n'
+                f'del "{tmp_exe}"\n'
+                "del \"%~f0\"\n"
+            )
+            bat_path.write_text(bat_content, encoding="utf-8")
+
+            CREATE_NEW_CONSOLE = 0x00000010
+            subprocess.Popen(
+                ["cmd", "/c", str(bat_path)],
+                creationflags=CREATE_NEW_CONSOLE,
+            )
+            QApplication.instance().quit()
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Update Failed", f"Could not download update:\n{exc}"
+            )
+            self._check_update_btn.setText(f"⬆ v{new_version} available!")
+            self._set_update_btn_class("update-check-btn-available")
+            self._check_update_btn.setEnabled(True)
 
     def _apply_update(self, new_version: str):
         import urllib.request
