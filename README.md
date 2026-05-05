@@ -109,4 +109,4 @@ This project is a fork/enhancement of the original **KDP Scout** by [rxpelle](ht
 
 ## 📄 License
 
-MIT — Free to use, modify, and distribute.
+Free to use for any purpose. You may not modify, sublicense, or redistribute this software without my prior consent.
