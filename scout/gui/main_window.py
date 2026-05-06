@@ -85,7 +85,7 @@ class SidebarButton(QPushButton):
 
 # Menu definitions per source
 AMAZON_NAV = [
-    ("\U0001f50d", "Keywords"),
+    ("🔍", "Keywords"),
     ("📈", "Trending"),
     ("🔬", "Niche Analyzer"),
     ("🎯", "Find For Me"),
@@ -96,7 +96,7 @@ AMAZON_NAV = [
 ]
 
 GOOGLE_NAV = [
-    ("\U0001f50d", "G-Keywords"),
+    ("🔍", "G-Keywords"),
     ("📈", "G-Trending"),
     ("📚", "G-Books"),
 ]
@@ -115,8 +115,19 @@ GOODREADS_NAV = [
 
 COMMON_NAV = [
     ("📜", "History"),
-    ("🤖", "Automation"),
     ("⚙", "Settings"),
+]
+
+POD_NAV = [
+    ("🔍", "Keywords"),
+    ("📈", "Trending"),
+    ("🔬", "Niche Analyzer"),
+    ("🎯", "Find For Me"),
+    ("🏷", "Competitors"),
+    ("🌱", "Seeds"),
+    ("📌", "Pinterest"),
+    ("🔎", "Product Lookup"),
+    ("📊", "Market Overview"),
 ]
 
 
@@ -125,6 +136,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Scout")
         self.setMinimumSize(960, 600)
+        self._mode = 'kdp'
 
         self._app_icon = _load_logo_icon()
         if not self._app_icon.isNull():
@@ -133,11 +145,9 @@ class MainWindow(QMainWindow):
 
         self._pages = {}
         self._page_factories = {}
+        self._pod_pages = {}
+        self._pod_page_factories = {}
         self._nav_buttons = []
-        self._source_buttons = {
-            "amazon": [], "google": [], "tiktok": [],
-            "reddit": [], "goodreads": [], "common": [],
-        }
         self._update_thread = None
         self._pending_version = None
         self._pending_exe_url = ""
@@ -153,36 +163,55 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Sidebar
-        sidebar = QFrame()
-        sidebar.setProperty("class", "sidebar")
-        sidebar.setFixedWidth(200)
-        self._sidebar_layout = QVBoxLayout(sidebar)
+        # Sidebar container
+        self._sidebar = QFrame()
+        self._sidebar.setProperty("class", "sidebar")
+        self._sidebar.setFixedWidth(200)
+        self._sidebar_layout = QVBoxLayout(self._sidebar)
         self._sidebar_layout.setContentsMargins(8, 16, 8, 16)
         self._sidebar_layout.setSpacing(4)
 
-        # Logo
-        logo_label = QLabel()
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Store reference to sidebar for later use
+        self._sidebar_container = self._sidebar
+
+        # Logo (clickable to toggle mode)
+        self._logo_label = QLabel()
+        self._logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo_label.setCursor(Qt.CursorShape.PointingHandCursor)
         pixmap = QPixmap(str(_LOGO_PATH)) if _LOGO_PATH.exists() else QPixmap()
         if not pixmap.isNull():
-            logo_label.setPixmap(
+            self._logo_label.setPixmap(
                 pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio,
                               Qt.TransformationMode.SmoothTransformation)
             )
-            self._sidebar_layout.addWidget(logo_label)
+            self._sidebar_layout.addWidget(self._logo_label)
             self._sidebar_layout.addSpacing(4)
 
-        title = QLabel("Scout")
-        title.setProperty("class", "sidebar-title")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._sidebar_layout.addWidget(title)
-        self._sidebar_layout.addSpacing(12)
+        self._title = QLabel("Scout")
+        self._title.setProperty("class", "sidebar-title")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sidebar_layout.addWidget(self._title)
 
-        # Source selector
+        # Mode label
+        self._mode_label = QLabel("KDP MODE")
+        self._mode_label.setProperty("class", "sidebar-mode")
+        self._mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sidebar_layout.addWidget(self._mode_label)
+
+        self._sidebar_layout.addSpacing(8)
+
+        self._logo_label.mousePressEvent = lambda e: self._toggle_mode()
+
+        # KDP container
+        self._kdp_container = QWidget()
+        kdp_layout = QVBoxLayout(self._kdp_container)
+        kdp_layout.setContentsMargins(0, 0, 0, 0)
+        kdp_layout.setSpacing(4)
+
+        # KDP source selector
         source_label = QLabel("  Data Source")
         source_label.setStyleSheet("color: #6c7086; font-size: 11px; font-weight: bold;")
-        self._sidebar_layout.addWidget(source_label)
+        kdp_layout.addWidget(source_label)
 
         self._source_combo = QComboBox()
         self._source_combo.addItem("🛒  Amazon", "amazon")
@@ -192,75 +221,125 @@ class MainWindow(QMainWindow):
         self._source_combo.addItem("📚  Goodreads", "goodreads")
         self._source_combo.setFixedHeight(36)
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
-        self._sidebar_layout.addWidget(self._source_combo)
-        self._sidebar_layout.addSpacing(12)
+        kdp_layout.addWidget(self._source_combo)
+        kdp_layout.addSpacing(12)
 
-        # Amazon nav buttons
+        # Amazon section
         self._amazon_section_label = QLabel("  AMAZON TOOLS")
         self._amazon_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        self._sidebar_layout.addWidget(self._amazon_section_label)
+        kdp_layout.addWidget(self._amazon_section_label)
 
+        self._amazon_buttons = []
         for icon, label in AMAZON_NAV:
             btn = SidebarButton(icon, label)
             btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
-            self._sidebar_layout.addWidget(btn)
+            kdp_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["amazon"].append(btn)
+            self._amazon_buttons.append(btn)
 
-        # Google nav buttons
-        self._sidebar_layout.addSpacing(4)
+        # Google section
+        kdp_layout.addSpacing(4)
         self._google_section_label = QLabel("  GOOGLE TOOLS")
         self._google_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        self._sidebar_layout.addWidget(self._google_section_label)
+        kdp_layout.addWidget(self._google_section_label)
 
+        self._google_buttons = []
         for icon, label in GOOGLE_NAV:
             btn = SidebarButton(icon, label)
             btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
-            self._sidebar_layout.addWidget(btn)
+            kdp_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["google"].append(btn)
+            self._google_buttons.append(btn)
 
-        # TikTok nav buttons
-        self._sidebar_layout.addSpacing(4)
+        # TikTok section
+        kdp_layout.addSpacing(4)
         self._tiktok_section_label = QLabel("  TIKTOK TOOLS")
         self._tiktok_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        self._sidebar_layout.addWidget(self._tiktok_section_label)
+        kdp_layout.addWidget(self._tiktok_section_label)
 
+        self._tiktok_buttons = []
         for icon, label in TIKTOK_NAV:
             btn = SidebarButton(icon, label)
             btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
-            self._sidebar_layout.addWidget(btn)
+            kdp_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["tiktok"].append(btn)
+            self._tiktok_buttons.append(btn)
 
-        # Reddit nav buttons
-        self._sidebar_layout.addSpacing(4)
+        # Reddit section
+        kdp_layout.addSpacing(4)
         self._reddit_section_label = QLabel("  REDDIT TOOLS")
         self._reddit_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        self._sidebar_layout.addWidget(self._reddit_section_label)
+        kdp_layout.addWidget(self._reddit_section_label)
 
+        self._reddit_buttons = []
         for icon, label in REDDIT_NAV:
             btn = SidebarButton(icon, label)
             btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
-            self._sidebar_layout.addWidget(btn)
+            kdp_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["reddit"].append(btn)
+            self._reddit_buttons.append(btn)
 
-        # Goodreads nav buttons
-        self._sidebar_layout.addSpacing(4)
+        # Goodreads section
+        kdp_layout.addSpacing(4)
         self._goodreads_section_label = QLabel("  GOODREADS TOOLS")
         self._goodreads_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        self._sidebar_layout.addWidget(self._goodreads_section_label)
+        kdp_layout.addWidget(self._goodreads_section_label)
 
+        self._goodreads_buttons = []
         for icon, label in GOODREADS_NAV:
             btn = SidebarButton(icon, label)
             btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
-            self._sidebar_layout.addWidget(btn)
+            kdp_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["goodreads"].append(btn)
+            self._goodreads_buttons.append(btn)
+
+        kdp_layout.addStretch()
+        self._kdp_container.setLayout(kdp_layout)
+
+        # POD container
+        self._pod_container = QWidget()
+        pod_layout = QVBoxLayout(self._pod_container)
+        pod_layout.setContentsMargins(0, 0, 0, 0)
+        pod_layout.setSpacing(4)
+
+        # POD source selector
+        pod_source_label = QLabel("  Data Sources")
+        pod_source_label.setStyleSheet("color: #6c7086; font-size: 11px; font-weight: bold;")
+        pod_layout.addWidget(pod_source_label)
+
+        self._pod_source_combo = QComboBox()
+        self._pod_source_combo.addItem("🛒  Amazon", "amazon")
+        self._pod_source_combo.addItem("🔍  Google", "google")
+        self._pod_source_combo.addItem("📌  Pinterest", "pinterest")
+        self._pod_source_combo.addItem("🎨  Etsy", "etsy")
+        self._pod_source_combo.setFixedHeight(36)
+        self._pod_source_combo.currentIndexChanged.connect(self._on_pod_source_changed)
+        pod_layout.addWidget(self._pod_source_combo)
+        pod_layout.addSpacing(12)
+
+        # POD section
+        self._pod_section_label = QLabel("  POD TOOLS")
+        self._pod_section_label.setStyleSheet("color: #6c7086; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+        pod_layout.addWidget(self._pod_section_label)
+
+        self._pod_buttons = []
+        for icon, label in POD_NAV:
+            btn = SidebarButton(icon, label)
+            btn.clicked.connect(lambda checked, l=label: self._switch_pod_page(l))
+            pod_layout.addWidget(btn)
+            self._nav_buttons.append((label, btn))
+            self._pod_buttons.append(btn)
+
+        pod_layout.addStretch()
+        self._pod_container.setLayout(pod_layout)
+        self._pod_container.hide()
+
+        # Add containers to sidebar
+        self._sidebar_layout.addWidget(self._kdp_container)
+        self._sidebar_layout.addWidget(self._pod_container)
+        self._sidebar_layout.addSpacing(8)
 
         # Separator
-        self._sidebar_layout.addSpacing(8)
         sep_line = QFrame()
         sep_line.setFrameShape(QFrame.Shape.HLine)
         sep_line.setStyleSheet("color: #313244;")
@@ -268,16 +347,17 @@ class MainWindow(QMainWindow):
         self._sidebar_layout.addSpacing(4)
 
         # Common nav buttons
+        self._common_buttons = []
         for icon, label in COMMON_NAV:
             btn = SidebarButton(icon, label)
-            btn.clicked.connect(lambda checked, l=label: self._switch_page(l))
+            btn.clicked.connect(lambda checked, l=label: self._switch_page(l) if self._mode == 'kdp' else self._switch_pod_page(l))
             self._sidebar_layout.addWidget(btn)
             self._nav_buttons.append((label, btn))
-            self._source_buttons["common"].append(btn)
+            self._common_buttons.append(btn)
 
         self._sidebar_layout.addStretch()
 
-        # ── Update checker ──────────────────────────────────────────
+        # Update checker button
         self._check_update_btn = QPushButton("🔄 Checking...")
         self._check_update_btn.setFixedHeight(28)
         self._check_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -285,7 +365,6 @@ class MainWindow(QMainWindow):
         self._check_update_btn.setEnabled(False)
         self._check_update_btn.clicked.connect(self._on_check_update_clicked)
         self._sidebar_layout.addWidget(self._check_update_btn)
-        # ────────────────────────────────────────────────────────────
 
         # Version
         try:
@@ -297,7 +376,7 @@ class MainWindow(QMainWindow):
         ver_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sidebar_layout.addWidget(ver_label)
 
-        layout.addWidget(sidebar)
+        layout.addWidget(self._sidebar)
 
         # Separator
         sep = QFrame()
@@ -307,9 +386,13 @@ class MainWindow(QMainWindow):
 
         # Stacked pages
         self._stack = QStackedWidget()
+        self._pod_stack = QStackedWidget()
+        self._pod_stack.hide()
         layout.addWidget(self._stack, 1)
+        layout.addWidget(self._pod_stack, 1)
 
         self._register_page_factories()
+        self._register_pod_page_factories()
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -331,14 +414,12 @@ class MainWindow(QMainWindow):
         self._start_update_check()
 
     def _start_update_check(self):
-        # Reset button to "Checking…" state
         self._pending_version = None
         self._check_update_btn.setText("🔄 Checking...")
         self._check_update_btn.setEnabled(False)
         self._set_update_btn_class("update-check-btn")
         self._check_update_btn.show()
 
-        # Disconnect any old click handler and restore default
         try:
             self._check_update_btn.clicked.disconnect()
         except Exception:
@@ -402,7 +483,7 @@ class MainWindow(QMainWindow):
         msg = QLabel(
             f"<b>Version {new_version} is available.</b><br><br>"
             "Download and apply the update now?<br>"
-            "<span style=\'color:#888;font-size:11px;\'>The app will restart automatically.</span>"
+            "<span style='color:#888;font-size:11px;'>The app will restart automatically.</span>"
         )
         msg.setWordWrap(True)
         msg.setTextFormat(Qt.TextFormat.RichText)
@@ -463,7 +544,7 @@ class MainWindow(QMainWindow):
                 "    exit /b 1\n"
                 ")\n"
                 "echo Done! Restarting KDP Scout...\n"
-                f'start \"\" "{current_exe}"\n'
+                f'start "" "{current_exe}"\n'
                 f'del "{tmp_exe}"\n'
                 "del \"%~f0\"\n"
             )
@@ -548,7 +629,6 @@ class MainWindow(QMainWindow):
         from scout.gui.pages.ads_page import AdsPage
         from scout.gui.pages.seeds_page import SeedsPage
         from scout.gui.pages.asin_lookup_page import ASINLookupPage
-        from scout.gui.pages.automation_page import AutomationPage
         from scout.gui.pages.settings_page import SettingsPage
         from scout.gui.pages.history_page import HistoryPage
         from scout.gui.pages.niche_analyzer_page import NicheAnalyzerPage
@@ -569,9 +649,6 @@ class MainWindow(QMainWindow):
             "Ads": AdsPage,
             "Seeds": SeedsPage,
             "ASIN Lookup": ASINLookupPage,
-            "History": HistoryPage,
-            "Automation": AutomationPage,
-            "Settings": SettingsPage,
             "G-Keywords": GoogleKeywordsPage,
             "G-Trending": GoogleTrendingPage,
             "G-Books": GoogleBooksPage,
@@ -579,8 +656,93 @@ class MainWindow(QMainWindow):
             "R-Demand": RedditDemandPage,
             "GR-Explorer": GoodreadsExplorerPage,
         }
+        
+        # Create History and Settings for KDP stack
+        self._kdp_history = HistoryPage()
+        self._kdp_settings = SettingsPage()
+        self._pages["History"] = self._stack.addWidget(self._kdp_history)
+        self._pages["Settings"] = self._stack.addWidget(self._kdp_settings)
+        
+        # Create History and Settings for POD stack
+        self._pod_history = HistoryPage()
+        self._pod_settings = SettingsPage()
+        self._pod_pages["History"] = self._pod_stack.addWidget(self._pod_history)
+        self._pod_pages["Settings"] = self._pod_stack.addWidget(self._pod_settings)
+
+    def _register_pod_page_factories(self):
+        try:
+            from scout.gui.pages.pod_keywords_page import PodKeywordsPage
+            from scout.gui.pages.pod_trending_page import PodTrendingPage
+            from scout.gui.pages.pod_niche_analyzer_page import PodNicheAnalyzerPage
+            from scout.gui.pages.pod_find_for_me_page import PodFindForMePage
+            from scout.gui.pages.pod_competitors_page import PodCompetitorsPage
+            from scout.gui.pages.pod_seeds_page import PodSeedsPage
+            from scout.gui.pages.pod_pinterest_page import PodPinterestPage
+            from scout.gui.pages.pod_product_lookup_page import PodProductLookupPage
+            from scout.gui.pages.pod_market_overview_page import PodMarketOverviewPage
+
+            self._pod_page_factories = {
+                "Keywords": PodKeywordsPage,
+                "Trending": PodTrendingPage,
+                "Niche Analyzer": PodNicheAnalyzerPage,
+                "Find For Me": PodFindForMePage,
+                "Competitors": PodCompetitorsPage,
+                "Seeds": PodSeedsPage,
+                "Pinterest": PodPinterestPage,
+                "Product Lookup": PodProductLookupPage,
+                "Market Overview": PodMarketOverviewPage,
+            }
+        except Exception as e:
+            print(f'Failed to register POD pages: {e}')
+
+    def _toggle_mode(self):
+        if self._mode == 'kdp':
+            # Switch to POD mode
+            self._mode = 'pod'
+            self._mode_label.setText('POD MODE')
+            self._mode_label.setStyleSheet("color: #cba6f7; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+            self._apply_pod_style()
+            self._kdp_container.hide()
+            self._pod_container.show()
+            self._stack.hide()
+            self._pod_stack.show()
+            self._on_pod_source_changed(0)
+        else:
+            # Switch to KDP mode
+            self._mode = 'kdp'
+            self._mode_label.setText('KDP MODE')
+            self._mode_label.setStyleSheet("color: #89b4fa; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+            self._apply_kdp_style()
+            self._pod_container.hide()
+            self._kdp_container.show()
+            self._pod_stack.hide()
+            self._stack.show()
+            self._on_source_changed()
+
+    def _apply_pod_style(self):
+        try:
+            style_path = _RESOURCES / "style.qss"
+            if style_path.exists():
+                with open(style_path, 'r') as f:
+                    style = f.read()
+                style = style.replace('#89b4fa', '#cba6f7').replace('#b4befe', '#cba6f7').replace('#74c7ec', '#cba6f7')
+                self.setStyleSheet(style)
+        except Exception:
+            pass
+
+    def _apply_kdp_style(self):
+        try:
+            style_path = _RESOURCES / "style.qss"
+            if style_path.exists():
+                with open(style_path, 'r') as f:
+                    self.setStyleSheet(f.read())
+        except Exception:
+            pass
 
     def _on_source_changed(self, _=None):
+        if self._mode == 'pod':
+            return
+
         source = self._source_combo.currentData() or "amazon"
 
         show_amazon = source == "amazon"
@@ -590,23 +752,23 @@ class MainWindow(QMainWindow):
         show_goodreads = source == "goodreads"
 
         self._amazon_section_label.setVisible(show_amazon)
-        for btn in self._source_buttons["amazon"]:
+        for btn in self._amazon_buttons:
             btn.setVisible(show_amazon)
 
         self._google_section_label.setVisible(show_google)
-        for btn in self._source_buttons["google"]:
+        for btn in self._google_buttons:
             btn.setVisible(show_google)
 
         self._tiktok_section_label.setVisible(show_tiktok)
-        for btn in self._source_buttons["tiktok"]:
+        for btn in self._tiktok_buttons:
             btn.setVisible(show_tiktok)
 
         self._reddit_section_label.setVisible(show_reddit)
-        for btn in self._source_buttons["reddit"]:
+        for btn in self._reddit_buttons:
             btn.setVisible(show_reddit)
 
         self._goodreads_section_label.setVisible(show_goodreads)
-        for btn in self._source_buttons["goodreads"]:
+        for btn in self._goodreads_buttons:
             btn.setVisible(show_goodreads)
 
         if show_amazon:
@@ -620,6 +782,30 @@ class MainWindow(QMainWindow):
         elif show_goodreads:
             self._switch_page("GR-Explorer")
 
+    def _on_pod_source_changed(self, _=None):
+        source = self._pod_source_combo.currentData() or "amazon"
+
+        # Hide all POD buttons first
+        for btn in self._pod_buttons:
+            btn.setVisible(False)
+
+        # Show buttons based on source
+        source_map = {
+            'amazon': ['Keywords', 'Niche Analyzer', 'Find For Me'],
+            'google': ['Trending', 'Market Overview'],
+            'pinterest': ['Pinterest', 'Seeds'],
+            'etsy': ['Competitors', 'Product Lookup'],
+        }
+
+        if source in source_map:
+            for label in source_map[source]:
+                for btn in self._pod_buttons:
+                    if btn.text().strip().endswith(label):
+                        btn.setVisible(True)
+            # Switch to first page for this source
+            first_page = source_map[source][0]
+            self._switch_pod_page(first_page)
+
     def _switch_page(self, label):
         if label not in self._pages:
             factory = self._page_factories.get(label)
@@ -627,12 +813,8 @@ class MainWindow(QMainWindow):
                 try:
                     page = factory()
                 except Exception as e:
-                    import traceback, logging
-                    logging.getLogger(__name__).error(
-                        f"Failed to create page '{label}': {e}\n{traceback.format_exc()}"
-                    )
                     from PyQt6.QtWidgets import QLabel
-                    page = QLabel(f"⚠ Error loading '{label}':\n{e}")
+                    page = QLabel(f"⚠ Error loading '{label}': {e}")
                     page.setWordWrap(True)
                     page.setStyleSheet("color: #f38ba8; padding: 20px; font-size: 13px;")
                 idx = self._stack.addWidget(page)
@@ -641,6 +823,27 @@ class MainWindow(QMainWindow):
                 return
 
         self._stack.setCurrentIndex(self._pages[label])
+
+        for name, btn in self._nav_buttons:
+            btn.setChecked(name == label)
+
+    def _switch_pod_page(self, label):
+        if label not in self._pod_pages:
+            factory = self._pod_page_factories.get(label)
+            if factory:
+                try:
+                    page = factory()
+                except Exception as e:
+                    from PyQt6.QtWidgets import QLabel
+                    page = QLabel(f"⚠ Error loading '{label}': {e}")
+                    page.setWordWrap(True)
+                    page.setStyleSheet("color: #f38ba8; padding: 20px; font-size: 13px;")
+                idx = self._pod_stack.addWidget(page)
+                self._pod_pages[label] = idx
+            else:
+                return
+
+        self._pod_stack.setCurrentIndex(self._pod_pages[label])
 
         for name, btn in self._nav_buttons:
             btn.setChecked(name == label)
