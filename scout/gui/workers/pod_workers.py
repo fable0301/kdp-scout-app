@@ -87,6 +87,34 @@ class PodMineWorker(BaseWorker):
             raise
 
 
+class PodMineAmazonWorker(BaseWorker):
+    """Mine keywords from Amazon Merch autocomplete ONLY."""
+
+    def __init__(self, seed, product_type="all", marketplace="us", depth=2, parent=None):
+        super().__init__(parent)
+        self.seed = seed
+        self.product_type = product_type
+        self.marketplace = marketplace
+        self.depth = depth
+
+    def run_task(self):
+        self.status.emit(f"Mining Amazon Merch: '{self.seed}'...")
+        self.log.emit(f"Marketplace: {self.marketplace.upper()} | Product: {self.product_type} | Depth: {self.depth}")
+        try:
+            results = pod_merch_autocomplete.mine_merch_autocomplete(
+                self.seed,
+                marketplace=self.marketplace,
+                product_type=self.product_type,
+                depth=self.depth,
+            )
+            self.progress.emit(100, 100)
+            self.log.emit(f"Found {len(results)} keywords from Merch autocomplete")
+            return results
+        except Exception as e:
+            self.log.emit(f"Error: {e}")
+            raise
+
+
 class PodScoreWorker(BaseWorker):
     """Score a list of POD keywords using pod_scorer."""
 
@@ -433,6 +461,83 @@ class PodProductLookupWorker(BaseWorker):
 
         except Exception as e:
             self.log.emit(f"Lookup error: {e}")
+
+        self.progress.emit(100, 100)
+        return result
+
+
+class PodProductLookupAmazonWorker(BaseWorker):
+    """Scrape an Amazon Merch product page by ASIN or amazon.com URL."""
+
+    def __init__(self, url_or_asin, parent=None):
+        super().__init__(parent)
+        self.url_or_asin = url_or_asin
+
+    def run_task(self):
+        import re
+        import requests
+        from bs4 import BeautifulSoup
+
+        raw = self.url_or_asin.strip()
+        result = {"title": "", "asin": "", "keywords": [], "price": 0.0, "platform": "merch", "url": raw}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+        # Resolve ASIN
+        asin = ""
+        if re.match(r"^[Bb]0[A-Z0-9]{8}$", raw):
+            asin = raw.upper()
+        else:
+            m = re.search(r"/dp/([A-Z0-9]{10})", raw)
+            if m:
+                asin = m.group(1)
+
+        if not asin:
+            self.log.emit("Could not extract a valid ASIN from input.")
+            self.progress.emit(100, 100)
+            return result
+
+        result["asin"] = asin
+        product_url = f"https://www.amazon.com/dp/{asin}"
+        self.status.emit(f"Fetching ASIN {asin}...")
+        self.log.emit(f"URL: {product_url}")
+
+        try:
+            self.progress.emit(20, 100)
+            resp = requests.get(product_url, headers=headers, timeout=15)
+            self.progress.emit(60, 100)
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Title
+            title_elem = soup.find(id="productTitle")
+            if title_elem:
+                result["title"] = title_elem.get_text(strip=True)
+            self.log.emit(f"Title: {result['title'][:60] or 'not found'}")
+
+            # Price
+            price_elem = (
+                soup.find("span", {"class": "a-price-whole"}) or
+                soup.find("span", {"id": "priceblock_ourprice"}) or
+                soup.find("span", {"class": re.compile(r"price")})
+            )
+            if price_elem:
+                m = re.search(r"[\d.,]+", price_elem.get_text())
+                if m:
+                    try:
+                        result["price"] = float(m.group().replace(",", ""))
+                    except ValueError:
+                        pass
+
+            # Keywords from bullet points
+            bullets = soup.find_all("span", {"class": "a-list-item"})
+            result["keywords"] = [
+                b.get_text(strip=True)[:80]
+                for b in bullets
+                if len(b.get_text(strip=True)) > 4
+            ][:15]
+            self.log.emit(f"Extracted {len(result['keywords'])} keyword hints")
+
+        except Exception as e:
+            self.log.emit(f"Fetch error: {e}")
 
         self.progress.emit(100, 100)
         return result

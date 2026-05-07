@@ -6,26 +6,19 @@ from PyQt6.QtWidgets import (
 
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.widgets.progress_panel import ProgressPanel
-from scout.gui.workers.pod_workers import PodMineWorker, PodScoreWorker
+from scout.gui.workers.pod_workers import PodMineAmazonWorker, PodScoreWorker
 from scout.gui.search_history import SearchHistory
 
 
 POD_KEYWORD_COLUMNS = [
-    "row_num", "keyword", "score",
-    "merch_ac", "etsy_comp", "rb_comp", "pinterest_boards",
-    "reddit_demand", "g_trends", "avg_price", "sources",
+    "row_num", "keyword", "merch_ac_position", "score", "avg_price", "sources",
 ]
 
 POD_KEYWORD_DISPLAY_NAMES = {
     "row_num": "#",
     "keyword": "Keyword",
+    "merch_ac_position": "Merch AC Position",
     "score": "Score",
-    "merch_ac": "Merch AC",
-    "etsy_comp": "Etsy Comp.",
-    "rb_comp": "RB Comp.",
-    "pinterest_boards": "Pinterest",
-    "reddit_demand": "Reddit",
-    "g_trends": "G.Trends",
     "avg_price": "Avg Price",
     "sources": "Sources",
 }
@@ -35,7 +28,7 @@ MARKETPLACES = ["US", "UK", "DE", "FR", "CA"]
 
 
 class PodKeywordsPage(QWidget):
-    """Mine POD keywords depuis Amazon Merch autocomplete + Google Suggest."""
+    """Mine keywords from Amazon Merch autocomplete only."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,40 +41,40 @@ class PodKeywordsPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        header = QLabel("<h2>🔍 POD Keywords</h2>")
+        header = QLabel("<h2>🔍 Amazon Merch Keywords</h2>")
         header.setStyleSheet("color: #cba6f7;")
         layout.addWidget(header)
 
         desc = QLabel(
-            "Mine les keywords depuis Amazon Merch autocomplete + Google Suggest. "
-            "Score basé sur compétition Etsy/Redbubble, Pinterest, Reddit et Google Trends."
+            "Mine keywords directly from Amazon Merch autocomplete. "
+            "Results show keyword position in Merch search suggestions."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet("color: #a6adc8; font-size: 12px;")
         layout.addWidget(desc)
 
-        search_group = QGroupBox("Paramètres de recherche")
+        search_group = QGroupBox("Search Parameters")
         search_layout = QFormLayout(search_group)
         search_layout.setSpacing(8)
 
         self._seed_input = QLineEdit()
-        self._seed_input.setPlaceholderText("ex: cat, nurse, funny coffee, dog mom...")
+        self._seed_input.setPlaceholderText("e.g. cat, nurse, funny coffee, dog mom...")
         self._seed_input.returnPressed.connect(self._start_mine)
-        search_layout.addRow("Seed keyword :", self._seed_input)
+        search_layout.addRow("Seed keyword:", self._seed_input)
 
         self._product_combo = QComboBox()
         self._product_combo.addItems(PRODUCT_TYPES)
-        search_layout.addRow("Type de produit :", self._product_combo)
+        search_layout.addRow("Product type:", self._product_combo)
 
         self._marketplace_combo = QComboBox()
         self._marketplace_combo.addItems(MARKETPLACES)
-        search_layout.addRow("Marketplace :", self._marketplace_combo)
+        search_layout.addRow("Marketplace:", self._marketplace_combo)
 
         self._depth_spin = QSpinBox()
         self._depth_spin.setRange(1, 4)
         self._depth_spin.setValue(2)
-        self._depth_spin.setToolTip("Profondeur d'expansion (1=rapide, 3=exhaustif)")
-        search_layout.addRow("Depth :", self._depth_spin)
+        self._depth_spin.setToolTip("Autocomplete expansion depth (1=fast, 3=exhaustive)")
+        search_layout.addRow("Depth:", self._depth_spin)
 
         layout.addWidget(search_group)
 
@@ -119,18 +112,15 @@ class PodKeywordsPage(QWidget):
     def _start_mine(self):
         seed = self._seed_input.text().strip()
         if not seed:
-            QMessageBox.warning(self, "Seed requis", "Veuillez saisir un mot-clé seed.")
+            QMessageBox.warning(self, "Seed required", "Please enter a seed keyword.")
             return
 
         product = self._product_combo.currentText().lower()
-        if product == "all":
-            product = "all"
-
         marketplace = self._marketplace_combo.currentText().lower()
         depth = self._depth_spin.value()
 
         SearchHistory.instance().log(
-            tool="POD Keywords",
+            tool="POD Amazon Keywords",
             action="mine",
             query=seed,
             notes=f"product={product} marketplace={marketplace} depth={depth}",
@@ -140,10 +130,10 @@ class PodKeywordsPage(QWidget):
         self._mine_btn.setEnabled(False)
         self._score_btn.setEnabled(False)
 
-        self._worker = PodMineWorker(
+        self._worker = PodMineAmazonWorker(
             seed=seed,
-            platform="all",
             product_type=product,
+            marketplace=marketplace,
             depth=depth,
         )
         self._worker.status.connect(self._progress.set_status)
@@ -154,9 +144,8 @@ class PodKeywordsPage(QWidget):
         self._worker.start()
 
     def _on_mine_finished(self, keywords):
-        if not keywords:
-            keywords = []
-        self._progress.finish(f"✅  {len(keywords)} keywords trouvés")
+        keywords = keywords or []
+        self._progress.finish(f"✅  {len(keywords)} keywords found")
         self._mine_btn.setEnabled(True)
         self._score_btn.setEnabled(True)
         self._keywords_data = keywords
@@ -165,7 +154,7 @@ class PodKeywordsPage(QWidget):
 
     def _start_score(self):
         if not self._keywords_data:
-            QMessageBox.warning(self, "Pas de données", "Lancez d'abord un mining.")
+            QMessageBox.warning(self, "No data", "Run a mine first.")
             return
 
         self._progress.start()
@@ -180,13 +169,12 @@ class PodKeywordsPage(QWidget):
         self._worker.start()
 
     def _on_score_finished(self, scored_keywords):
-        if not scored_keywords:
-            scored_keywords = []
-        self._progress.finish(f"✅  {len(scored_keywords)} keywords scorés")
+        scored_keywords = scored_keywords or []
+        self._progress.finish(f"✅  {len(scored_keywords)} keywords scored")
         self._score_btn.setEnabled(True)
         self._keywords_data = scored_keywords
         SearchHistory.instance().log(
-            tool="POD Keywords",
+            tool="POD Amazon Keywords",
             action="score",
             query=self._seed_input.text().strip(),
             results=self._keywords_data,
@@ -198,22 +186,14 @@ class PodKeywordsPage(QWidget):
     def _populate_table(self):
         data = []
         for i, kw in enumerate(self._keywords_data, 1):
-            score_val  = kw.get("score", 0) or 0
-            reddit_val = kw.get("reddit_score", 0) or 0
-            trends_val = kw.get("google_trends_score", 0) or 0
-            price_val  = kw.get("avg_price", 0) or 0
+            price_val = kw.get("avg_price", 0) or 0
             row = {
-                "row_num":          i,
-                "keyword":          kw.get("keyword", ""),
-                "score":            f"{score_val:.2f}",
-                "merch_ac":         kw.get("merch_ac_position", "—"),
-                "etsy_comp":        kw.get("etsy_competition", "—"),
-                "rb_comp":          kw.get("redbubble_competition", "—"),
-                "pinterest_boards": kw.get("pinterest_board_followers", "—"),
-                "reddit_demand":    f"{reddit_val:.1f}",
-                "g_trends":         f"{trends_val:.1f}",
-                "avg_price":        f"${price_val:.2f}" if price_val else "—",
-                "sources":          kw.get("source", kw.get("sources", "")),
+                "row_num":            i,
+                "keyword":            kw.get("keyword", ""),
+                "merch_ac_position":  kw.get("position", kw.get("merch_ac_position", "—")),
+                "score":              f"{kw.get('score', 0) or 0:.2f}",
+                "avg_price":          f"${price_val:.2f}" if price_val else "—",
+                "sources":            kw.get("source", kw.get("sources", "merch")),
             }
             data.append(row)
         self._table.load_data(
@@ -224,21 +204,20 @@ class PodKeywordsPage(QWidget):
 
     def _export_csv(self):
         if not self._keywords_data:
-            QMessageBox.warning(self, "Pas de données", "Rien à exporter.")
+            QMessageBox.warning(self, "No data", "Nothing to export.")
             return
         from PyQt6.QtWidgets import QFileDialog
         import csv
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "Exporter CSV", "pod_keywords.csv", "CSV Files (*.csv)"
+            self, "Export CSV", "pod_amazon_keywords.csv", "CSV Files (*.csv)"
         )
         if filepath:
             with open(filepath, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=POD_KEYWORD_COLUMNS)
                 writer.writeheader()
                 for kw in self._keywords_data:
-                    row = {col: kw.get(col, "") for col in POD_KEYWORD_COLUMNS}
-                    writer.writerow(row)
-            QMessageBox.information(self, "Export terminé", f"Exporté vers {filepath}")
+                    writer.writerow({col: kw.get(col, "") for col in POD_KEYWORD_COLUMNS})
+            QMessageBox.information(self, "Export done", f"Saved to {filepath}")
 
     def _clear_table(self):
         self._table.clear()
@@ -250,7 +229,7 @@ class PodKeywordsPage(QWidget):
             self._worker.cancel()
 
     def _on_worker_error(self, error_msg):
-        self._progress.finish(f"❌  Erreur : {error_msg}")
+        self._progress.finish(f"❌  Error: {error_msg}")
         self._mine_btn.setEnabled(True)
         self._score_btn.setEnabled(True)
         self._worker = None

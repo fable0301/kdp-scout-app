@@ -22,7 +22,8 @@ if getattr(sys, '_MEIPASS', None):
 else:
     _RESOURCES = Path(__file__).parent / "resources"
 _LOGO_ICO = _RESOURCES / "kdpsy.ico"
-_LOGO_PATH = _LOGO_ICO if _LOGO_ICO.exists() else _RESOURCES / "kdpsy.svg"
+_LOGO_PATH = _RESOURCES / "kdpsy.svg"
+_POD_LOGO_PATH = _RESOURCES / "kdpsy_pod.svg"
 
 GITHUB_RAW_VERSION_URL = (
     "https://raw.githubusercontent.com/hulyx/kdp-scout-app/main/scout/__init__.py"
@@ -403,14 +404,18 @@ class MainWindow(QMainWindow):
         self._check_update_btn.clicked.connect(self._on_check_update_clicked)
         self._sidebar_layout.addWidget(self._check_update_btn)
 
-        # Version
+        # Version (clickable to open GitHub)
         try:
             from scout import __version__
-            ver_label = QLabel(f"v{__version__}")
+            version_text = f"v{__version__}"
         except Exception:
-            ver_label = QLabel("v0.4.0")
+            version_text = "v0.4.0"
+        ver_label = QLabel(f'<a href="https://github.com/hulyx/scout-app">{version_text}</a>')
+        ver_label.setOpenExternalLinks(True)
         ver_label.setProperty("class", "sidebar-version")
         ver_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver_label.setToolTip("Open GitHub repository")
+        ver_label.setStyleSheet("color: #6c7086; text-decoration: none;")
         self._sidebar_layout.addWidget(ver_label)
 
         layout.addWidget(self._sidebar)
@@ -743,6 +748,11 @@ class MainWindow(QMainWindow):
             self._pod_container.show()
             self._stack.hide()
             self._pod_stack.show()
+            # Change logo to POD logo
+            if _POD_LOGO_PATH.exists():
+                pixmap = QPixmap(str(_POD_LOGO_PATH))
+                if not pixmap.isNull():
+                    self._logo_label.setPixmap(pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
             self._on_pod_source_changed(0)
         else:
             # Switch to KDP mode
@@ -754,6 +764,11 @@ class MainWindow(QMainWindow):
             self._kdp_container.show()
             self._pod_stack.hide()
             self._stack.show()
+            # Change logo to KDP logo
+            if _LOGO_PATH.exists():
+                pixmap = QPixmap(str(_LOGO_PATH))
+                if not pixmap.isNull():
+                    self._logo_label.setPixmap(pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
             self._on_source_changed()
 
     def _apply_pod_style(self):
