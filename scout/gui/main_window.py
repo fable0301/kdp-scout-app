@@ -326,7 +326,7 @@ class MainWindow(QMainWindow):
             },
             "google": {
                 "label": "  GOOGLE TOOLS",
-                "pages": [("📈", "Trending"), ("📊", "Market Overview")],
+                "pages": [("📈", "Trending"), ("📊", "Market Overview"), ("🎯", "Find For Me")],
             },
             "pinterest": {
                 "label": "  PINTEREST TOOLS",
@@ -335,10 +335,6 @@ class MainWindow(QMainWindow):
             "etsy": {
                 "label": "  ETSY TOOLS",
                 "pages": [("🏷", "Competitors"), ("🔎", "Product Lookup")],
-            },
-            "tools": {
-                "label": "  DISCOVERY TOOLS",
-                "pages": [("🎯", "Find For Me")],
             },
         }
 
