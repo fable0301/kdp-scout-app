@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodMarketOverviewWorker
+from scout.gui.search_history import SearchHistory
 
 
 POD_MARKET_COLUMNS = [
@@ -104,6 +105,14 @@ class PodMarketOverviewPage(QWidget):
         # Hide progress after 2 seconds
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(2000, self._progress.hide)
+        try:
+            all_results = self._hot_data + self._rising_data + self._opp_data
+            SearchHistory.instance().log(
+                tool="POD Market Overview", action="load",
+                results=all_results, result_count=len(all_results),
+            )
+        except Exception:
+            pass
     
     def _populate_table(self, table, data):
         rows = []

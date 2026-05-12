@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodCompetitorsWorker
+from scout.gui.search_history import SearchHistory
 
 
 POD_COMP_COLUMNS = [
@@ -113,6 +114,14 @@ class PodCompetitorsPage(QWidget):
         self._listings = listings
         self._populate_table()
         self._worker = None
+        try:
+            SearchHistory.instance().log(
+                tool="POD Competitors", action="analyze",
+                query=self._niche_input.text().strip(),
+                results=listings, result_count=len(listings),
+            )
+        except Exception:
+            pass
     
     def _populate_table(self):
         data = []

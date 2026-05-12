@@ -6,19 +6,21 @@ from PyQt6.QtWidgets import (
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.workers.pod_workers import PodFindForMeWorker
+from scout.gui.search_history import SearchHistory
 
 
 class PodFindForMePage(QWidget):
     """Page for automatically discovering profitable POD niches."""
 
     COLUMNS = [
-        "keyword", "word_count", "specificity_score", "depth_score",
+        "keyword", "word_count", "trend_score", "specificity_score", "depth_score",
         "global_score", "opportunity_score", "source", "seed"
     ]
 
     DISPLAY_NAMES = {
         "keyword": "Keyword",
         "word_count": "Words",
+        "trend_score": "Trend",
         "specificity_score": "Specificity",
         "depth_score": "Depth Bonus",
         "global_score": "Global Score",
@@ -152,8 +154,15 @@ class PodFindForMePage(QWidget):
                 self._worker.error.disconnect()
             except Exception:
                 pass
-            # Don't set to None immediately - let Python GC handle it
-            # self._worker = None
+
+        try:
+            SearchHistory.instance().log(
+                tool="POD Find For Me", action="discover",
+                query=f"{self._type_combo.currentText()}/{self._comp_combo.currentText()}",
+                results=results, result_count=len(results),
+            )
+        except Exception:
+            pass
 
     def _analyze_selected(self):
         row = self._table.get_selected_row()

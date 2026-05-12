@@ -40,32 +40,31 @@ def get_suggestions(keyword: str, prefix_with_product: bool = True, depth: int =
                     seen.add(sug)
                     results.append({"suggestion": sug, "source": "google_suggest"})
     
-    # Recursive expansion if depth > 1
+    # Recursive + alphabetical expansion only if depth > 1
     if depth > 1:
-        new_seeds = list(seen)[:15]  # Limit to top 15 to avoid explosion
+        new_seeds = list(seen)[:15]
         expanded = _expand_recursively(new_seeds, seen, depth - 1)
         for exp in expanded:
             if exp not in seen:
                 seen.add(exp)
                 results.append({"suggestion": exp, "source": "google_suggest"})
-    
-    # Alphabetical expansion (a-z suffixes)
-    alpha_expansions = _expand_alphabetically(keyword, seen)
-    for exp in alpha_expansions:
-        if exp not in seen:
-            seen.add(exp)
-            results.append({"suggestion": exp, "source": "google_suggest"})
+        
+        alpha_expansions = _expand_alphabetically(keyword, seen)
+        for exp in alpha_expansions:
+            if exp not in seen:
+                seen.add(exp)
+                results.append({"suggestion": exp, "source": "google_suggest"})
     
     return results
 
 
 def _expand_recursively(seeds: List[str], seen: Set[str], remaining_depth: int) -> List[str]:
-    """Recursively expand seeds."""
+    """Recursively expand seeds (low concurrency to avoid rate limits)."""
     if remaining_depth <= 0 or not seeds:
         return []
     
     expanded = []
-    with ThreadPoolExecutor(max_workers=10) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         fut_map = {pool.submit(_fetch_google_suggest, seed): seed for seed in seeds}
         for f in as_completed(fut_map):
             try:
@@ -77,7 +76,6 @@ def _expand_recursively(seeds: List[str], seen: Set[str], remaining_depth: int) 
             except Exception:
                 pass
     
-    # One more level if needed
     if remaining_depth > 1 and expanded:
         more = _expand_recursively(expanded[:10], seen, remaining_depth - 1)
         expanded.extend(more)
@@ -94,7 +92,7 @@ def _expand_alphabetically(base_keyword: str, seen: Set[str]) -> List[str]:
         results = _fetch_google_suggest(query)
         return [r for r in results if r not in seen and len(r) >= 3]
     
-    with ThreadPoolExecutor(max_workers=15) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         fut_map = {}
         # Suffixes: "cat a", "cat b", ...
         for letter in letters:
@@ -117,107 +115,56 @@ def _expand_alphabetically(base_keyword: str, seen: Set[str]) -> List[str]:
 
 
 def _fetch_google_suggest(query: str) -> List[str]:
-    """Fetch suggestions using googlesearch-python library to bypass SSL blocks."""
-    try:
-        from googlesearch import search
-        # Use the search library which handles redirects and SSL better
-        # We only need a few results to extract suggestions from titles/snippets
-        results = []
-        try:
-            # Search for the query and extract related terms from results
-            search_results = list(search(query, num_results=5, lang="en", timeout=5))
-            for url in search_results:
-                # Extract potential keywords from URL structure
-                if "google.com/search" in url or "youtu.be" not in url:
-                    # Clean URL to get meaningful phrases
-                    parts = url.replace("https://", "").replace("http://", "").split("/")
-                    for part in parts:
-                        clean = part.replace("-", " ").replace("_", " ").strip()
-                        if len(clean) > 3 and query.lower() in clean.lower():
-                            results.append(clean.title())
-        except Exception as e:
-            pass
-        
-        # Fallback: try direct API with aggressive retry and different client
-        if not results:
-            results = _fetch_direct_api(query)
-        
-        return list(set([r.strip() for r in results if len(r) >= 3]))
-    except Exception:
-        return _fetch_direct_api(query)
-
-
-def _fetch_direct_api(query: str) -> List[str]:
-    """Direct API fetch with multiple clients and aggressive retry logic."""
-    # Try different client types that are less blocked
-    clients = [
-        ("chrome", "firefox"),
-        ("chrome", "chrome"),
-        ("firefox", "firefox"),
-        ("gws", "firefox"),  # Google Web Search
-        ("serp", "chrome"),
-    ]
-    
-    urls = [
-        "https://www.google.com/complete/search",
-        "https://suggestqueries.google.com/complete/search",
-    ]
-    
-    headers_list = [
-        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"},
-        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"},
-        {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0", "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"},
-        {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "*/*"},
-    ]
-    
-    import random
+    """Fetch suggestions from Google Suggest with multiple fallback strategies."""
     import time
     
-    for attempt in range(5):  # More retries
-        client_name, cb_name = random.choice(clients)
-        url = random.choice(urls)
-        headers = random.choice(headers_list)
-        
-        params = {
-            "q": query,
-            "client": client_name,
-            "cp": cb_name,
-            "gs_ri": "hp",
-            "xhr": "t",
-            "xssi": "t",
-            "hl": "en",
-        }
-        
-        try:
-            session = requests.Session()
-            session.headers.update(headers)
-            resp = session.get(url, params=params, timeout=8)
-            
-            if resp.status_code == 200:
-                text = resp.text
-                # Handle JSONP response (starts with ")]}'\n")
-                if text.startswith(")]}'"):
-                    text = text[4:]
-                elif text.startswith(")]}'\n"):
-                    text = text[5:]
-                
-                import json
-                data = json.loads(text)
-                if isinstance(data, list) and len(data) >= 2:
-                    suggestions = data[1]
-                    if isinstance(suggestions, list):
-                        extracted = []
-                        for s in suggestions:
-                            if isinstance(s, str):
-                                extracted.append(s.strip())
-                            elif isinstance(s, list) and len(s) > 0:
-                                extracted.append(str(s[0]).strip())
-                        return extracted
-                return []
-        except Exception as e:
-            if attempt < 4:
-                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
-            continue
+    # Strategy 1: googlesearch-python library (web scraping, bypasses API blocks)
+    try:
+        from googlesearch import search
+        for attempt in range(2):
+            try:
+                results = list(search(query, num_results=8, lang="en", timeout=8))
+                if results:
+                    # Extract keywords from result page titles via URL patterns
+                    keywords = []
+                    for url in results:
+                        # Parse URL path for potential keywords
+                        path = url.replace("https://", "").replace("http://", "").split("/")
+                        for part in path:
+                            clean = part.replace("-", " ").replace("_", " ").replace("+", " ").strip()
+                            if len(clean) > 4 and query.lower() in clean.lower():
+                                keywords.append(clean.title())
+                    if keywords:
+                        return keywords
+                if attempt == 0:
+                    time.sleep(1)
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1)
+    except ImportError:
+        pass
+    
+    # Strategy 2: Direct API with browser-like headers
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+    }
+    url = "https://suggestqueries.google.com/complete/search"
+    params = {"q": query, "client": "chrome", "hl": "en"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            text = resp.text
+            if text.startswith(")]}"):
+                text = text[5:] if ")]}'\n" in text[:6] else text[4:]
+            import json
+            data = json.loads(text)
+            if isinstance(data, list) and len(data) >= 2:
+                sugs = data[1]
+                if isinstance(sugs, list):
+                    return [str(s[0]).strip() if isinstance(s, list) else str(s).strip() for s in sugs]
+    except Exception:
+        pass
     
     return []
 

@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodPinterestWorker
+from scout.gui.search_history import SearchHistory
 
 
 POD_PINTEREST_COLUMNS = [
@@ -143,6 +144,14 @@ class PodPinterestPage(QWidget):
 
         self._populate_table()
         self._worker = None
+        try:
+            SearchHistory.instance().log(
+                tool="POD Pinterest", action="explore",
+                query=f"{self._seed_input.text().strip()} [{self._mode_combo.currentText()}]",
+                results=self._data, result_count=len(self._data),
+            )
+        except Exception:
+            pass
 
     def _populate_table(self):
         data = []
@@ -159,14 +168,27 @@ class PodPinterestPage(QWidget):
         self._table.load_data(data)
 
     def _analyze_niche(self):
-        if not self._data:
-            QMessageBox.warning(self, "No Data", "Please explore Pinterest first.")
+        row = self._table.get_selected_row()
+        if not row:
+            QMessageBox.information(
+                self, "Select a Niche",
+                "Please select a row from the table first."
+            )
             return
-        # Placeholder - will navigate to niche analyzer
-        QMessageBox.information(
-            self, "Analyze Niche",
-            "Will send top suggestion to Niche Analyzer."
-        )
+        niche = row.get("suggestion", "").strip()
+        if not niche:
+            QMessageBox.information(
+                self, "No Niche",
+                "No niche keyword found in the selected row."
+            )
+            return
+        mw = self.window()
+        if hasattr(mw, '_switch_page'):
+            mw._switch_page("Niche Analyzer")
+            current = mw._stack.currentWidget()
+            if hasattr(current, '_niche_input'):
+                current._niche_input.setText(niche)
+                current._start_analysis()
 
     def _export_csv(self):
         if not self._data:

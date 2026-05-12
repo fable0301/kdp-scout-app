@@ -1,10 +1,29 @@
-```
-# Executable/binary files
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+build_log.txt
+
+# Data
+data/
+
+# Environment
+.env
+
+# Executable/binary files (keep these if generated locally)
 *.exe
 *.dll
 *.so
 *.a
 *.obj
 *.out
+scout-app.exe
 scout-app
-```

@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from scout.gui.widgets.data_table import DataTable
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodTrendingWorker
+from scout.gui.search_history import SearchHistory
 
 
 POD_TRENDING_COLUMNS = [
@@ -116,6 +117,14 @@ class PodTrendingPage(QWidget):
         self._trends_data = trends
         self._populate_table()
         self._worker = None
+        try:
+            SearchHistory.instance().log(
+                tool="POD Trending", action="discover",
+                query=f"{self._category_combo.currentText()}/{self._period_combo.currentText()}",
+                results=trends, result_count=len(trends),
+            )
+        except Exception:
+            pass
     
     def _populate_table(self):
         data = []

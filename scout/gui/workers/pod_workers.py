@@ -160,7 +160,7 @@ class PodTrendingWorker(BaseWorker):
                     "score": item.get("score", 0),
                     "source": "reddit",
                     "platform": ", ".join(item.get("subreddits", [])),
-                    "posts": item.get("posts", 0),
+                    "pinterest_pins": item.get("posts", 0),
                     "demand": item.get("demand", ""),
                 })
             self.progress.emit(40, 100)
@@ -180,7 +180,7 @@ class PodTrendingWorker(BaseWorker):
                             "score": min(1.0, q.get("value", 0) / 100.0),
                             "source": "google_trends",
                             "platform": "Google",
-                            "posts": 0,
+                            "pinterest_pins": 0,
                             "demand": "rising",
                         })
                 except Exception:
@@ -199,7 +199,7 @@ class PodTrendingWorker(BaseWorker):
                     "score": 0.7,
                     "source": "pinterest",
                     "platform": item.get("category", "Pinterest"),
-                    "posts": 0,
+                    "pinterest_pins": 0,
                     "demand": "trending",
                 })
             self.progress.emit(100, 100)
@@ -385,6 +385,8 @@ class PodFindForMeWorker(BaseWorker):
             kw["global_score"] = score_data["global_score"]
             kw["opportunity_score"] = score_data["opportunity_score"]
             kw["specificity_score"] = score_data["specificity_score"]
+            kw["depth_score"] = score_data["depth_score"]
+            kw["trend_score"] = score_data["trend_score"]
             scored.append(kw)
         
         # Sort by opportunity score (descending)
@@ -405,13 +407,13 @@ class PodFindForMeWorker(BaseWorker):
         return filtered[:500]  # Return top 500
 
     def _mine_seed_safe(self, seed):
-        """Mine a single seed safely without recursive explosion."""
-        from scout.collectors import pod_google_suggest
+        """Mine a single seed from Google Suggest + fallback Merch Autocomplete."""
+        from scout.collectors import pod_google_suggest, pod_merch_autocomplete
         
         keywords = []
         seen = set()
         
-        # Use Google Suggest with depth=1 (NO recursive expansion to prevent overload)
+        # Primary source: Google Suggest
         suggestions = pod_google_suggest.get_suggestions(seed, prefix_with_product=True, depth=1)
         
         for sug in suggestions:
@@ -419,30 +421,48 @@ class PodFindForMeWorker(BaseWorker):
             if text and len(text) >= 3 and text not in seen:
                 seen.add(text)
                 word_count = len(text.split())
-                keywords.append({
-                    "keyword": text,
-                    "niche": text,
-                    "source": "google_suggest",
-                    "seed": seed,
-                    "word_count": word_count,
-                    "merch_position": None,
-                    "etsy_competition": 0,
-                    "rb_competition": 0,
-                    "etsy_avg_price": 0.0,
-                    "rb_avg_price": 0.0,
-                    "google_trends_avg": 0,
-                    "google_trends_velocity": 0.0,
-                    "google_trends_trend": "",
-                    "google_trends_breakout": 0,
-                    "google_suggest_count": word_count,
-                })
+                keywords.append(self._make_keyword_dict(text, seed, "google_suggest", word_count))
+        
+        # Fallback source: Merch Autocomplete (if Google returned nothing)
+        if not keywords:
+            try:
+                merch_kws = pod_merch_autocomplete.mine_merch_autocomplete(seed, depth=1)
+                for i, kw in enumerate(merch_kws):
+                    text = kw.get("keyword", "").strip().lower()
+                    if text and len(text) >= 3 and text not in seen:
+                        seen.add(text)
+                        d = self._make_keyword_dict(text, seed, "merch", len(text.split()))
+                        d["merch_position"] = i + 1
+                        keywords.append(d)
+            except Exception:
+                pass
         
         return keywords
 
+    def _make_keyword_dict(self, text, seed, source, word_count):
+        return {
+            "keyword": text,
+            "niche": text,
+            "source": source,
+            "seed": seed,
+            "word_count": word_count,
+            "merch_position": None,
+            "etsy_competition": 0,
+            "rb_competition": 0,
+            "etsy_avg_price": 0.0,
+            "rb_avg_price": 0.0,
+            "google_trends_avg": 0,
+            "google_trends_velocity": 0.0,
+            "google_trends_trend": "",
+            "google_trends_breakout": 0,
+            "google_suggest_count": word_count,
+        }
+
     def _compute_specificity_score(self, kw):
         """
-        Compute scores based on keyword specificity and depth.
+        Compute scores based on keyword specificity, depth, and trend potential.
         Logic: Longer, more specific keywords = less competition = higher opportunity.
+        Trend keywords: words that perform well on Pinterest get a score boost.
         """
         text = kw.get("keyword", "")
         word_count = len(text.split())
@@ -469,12 +489,20 @@ class PodFindForMeWorker(BaseWorker):
         # Length bonus: longer keywords (by chars) tend to be more specific
         length_bonus = min(0.1, char_count / 500)  # Max 0.1 bonus at 50 chars
         
+        # Trend score: heuristic Pinterest trend potential based on keyword content
+        trend_words = ["gift", "idea", "design", "decor", "wall art",
+                       "style", "love", "cute", "funny", "custom",
+                       "personalized", "room", "home", "aesthetic",
+                       "inspiration", "minimalist", "boho", "vintage",
+                       "retro", "modern", "unique", "cool", "best"]
+        trend_matches = sum(1 for w in trend_words if w in text.lower())
+        trend_score = round(min(1.0, trend_matches * 0.25), 2)  # Up to 1.0
+        
         # Global score: combination of factors
-        global_score = round(min(1.0, specificity * 0.7 + depth_bonus + length_bonus), 3)
+        global_score = round(min(1.0, specificity * 0.5 + depth_bonus + length_bonus + trend_score * 0.15), 3)
         
         # Opportunity score: boost global score for long-tail keywords
-        # Rationale: Very specific keywords have less competition
-        opportunity_multiplier = 1.0 + (specificity * 0.3)  # Up to 1.3x
+        opportunity_multiplier = 1.0 + (specificity * 0.3)
         opportunity_score = round(min(1.0, global_score * opportunity_multiplier), 3)
         
         return {
@@ -482,6 +510,7 @@ class PodFindForMeWorker(BaseWorker):
             "opportunity_score": opportunity_score,
             "specificity_score": round(specificity, 3),
             "depth_score": round(depth_bonus + length_bonus, 3),
+            "trend_score": trend_score,
         }
 
     def _apply_competition_filter(self, results):
@@ -729,18 +758,20 @@ class PodPinterestWorker(BaseWorker):
 
         try:
             self.log.emit("Fetching Pinterest data...")
-            data = pod_pinterest_scraper.scrape_pinterest_search(self.seed)
+            data = pod_pinterest_scraper.scrape_pinterest_search(
+                self.seed, mode=self.mode
+            )
             result["suggestions"] = data.get("suggestions", [])
+            result["boards"] = data.get("top_boards", [])
             result["pin_count_estimate"] = data.get("pin_count_estimate", 0)
             result["trending"] = data.get("trending", [])
-            self.progress.emit(50, 100)
-
-            self.log.emit("Fetching boards...")
-            boards = pod_pinterest_scraper.get_pinterest_boards(self.seed)
-            result["boards"] = boards
             self.progress.emit(100, 100)
 
-            self.log.emit(f"Found {len(result['suggestions'])} suggestions, {len(boards)} boards")
+            self.log.emit(
+                f"Found {len(result['suggestions'])} suggestions, "
+                f"{len(result['boards'])} boards, "
+                f"{len(result['trending'])} trending"
+            )
         except Exception as e:
             self.log.emit(f"Pinterest error: {e}")
 
@@ -827,3 +858,95 @@ class PodMarketOverviewWorker(BaseWorker):
             "rising_trends": rising_trends,
             "opportunities": opportunities,
         }
+
+
+class PodSeedsWorker(BaseWorker):
+    """Generate seeds with heuristic trend scores (no API calls)."""
+
+    TREND_WORDS = [
+        "gift", "idea", "design", "decor", "wall art",
+        "style", "love", "cute", "funny", "custom",
+        "personalized", "room", "home", "aesthetic",
+        "inspiration", "minimalist", "boho", "vintage",
+        "retro", "modern", "unique", "cool", "best",
+        "gift for", "perfect", "trendy", "chic", "rustic",
+        "farmhouse", "coastal", "abstract", "geometric",
+    ]
+
+    PRODUCT_PREFIXES = [
+        "t-shirt", "mug", "sticker", "poster", "hoodie",
+        "gift for", "design", "funny",
+    ]
+
+    def __init__(self, category="all", limit_per_category=10, parent=None):
+        super().__init__(parent)
+        self.category = category
+        self.limit_per_category = limit_per_category
+
+    def _score_trend(self, keyword):
+        kw = keyword.lower()
+        words = kw.split()
+        score = 0.0
+
+        # 1. Specificity (0-30 points): more words = more specific
+        wc = len(words)
+        if wc >= 5:
+            score += 30
+        elif wc == 4:
+            score += 25
+        elif wc == 3:
+            score += 20
+        elif wc == 2:
+            score += 10
+        else:
+            score += 5
+
+        # 2. Trend words (0-50 points)
+        trend_hits = sum(1 for w in self.TREND_WORDS if w in kw)
+        score += min(50, trend_hits * 10)
+
+        # 3. Product prefix bonus (0-20 points)
+        has_prefix = any(kw.startswith(p) or kw.endswith(p) for p in self.PRODUCT_PREFIXES)
+        if has_prefix:
+            score += 20
+
+        return round(min(100, score), 1)
+
+    def run_task(self):
+        from scout.pod_seeds import get_all_seeds, expand_seed
+
+        self.status.emit("Generating seeds...")
+        seeds = get_all_seeds(category=self.category, limit_per_category=self.limit_per_category)
+
+        if not seeds:
+            self.log.emit("No seeds found for this category")
+            return []
+
+        self.log.emit(f"Got {len(seeds)} base seeds")
+
+        # Expand seeds with product prefixes
+        expanded = []
+        for seed in seeds:
+            for kw in expand_seed(seed, depth=2):
+                expanded.append(kw)
+
+        self.status.emit("Computing trend scores...")
+        self.log.emit(f"Scoring {len(expanded)} expanded seeds")
+
+        enriched = []
+        for i, kw in enumerate(expanded):
+            trend_score = self._score_trend(kw)
+            enriched.append({
+                "seed": kw,
+                "category": self.category.capitalize() if self.category != "all" else "Mixed",
+                "source": "generated",
+                "pinterest_pins": 0,
+                "trend_score": trend_score,
+            })
+            self.progress.emit(i + 1, len(expanded))
+
+        enriched.sort(key=lambda x: x["trend_score"], reverse=True)
+
+        self.log.emit(f"Done: {len(enriched)} seeds scored by trend potential")
+        self.status.emit(f"Generated {len(enriched)} scored seeds")
+        return enriched

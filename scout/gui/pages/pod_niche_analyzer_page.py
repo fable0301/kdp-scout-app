@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodNicheAnalyzerWorker
 from scout.gui.widgets.score_gauge import ScoreGauge
+from scout.gui.search_history import SearchHistory
 
 
 class PodNicheAnalyzerPage(QWidget):
@@ -130,6 +131,15 @@ class PodNicheAnalyzerPage(QWidget):
         self._results_label.show()
         
         self._worker = None
+        try:
+            SearchHistory.instance().log(
+                tool="POD Niche Analyzer", action="analyze",
+                query=result.get("niche", ""),
+                results=result, result_count=1,
+                notes=f"Global: {result.get('global_score', 0):.1f} | {result.get('recommended_platform', '')}",
+            )
+        except Exception:
+            pass
     
     def _export_report(self):
         QMessageBox.information(self, "Export", "Report export will be available soon!")

@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 
 from scout.gui.widgets.progress_panel import ProgressPanel
 from scout.gui.workers.pod_workers import PodProductLookupAmazonWorker
+from scout.gui.search_history import SearchHistory
 
 
 class PodProductLookupPage(QWidget):
@@ -135,6 +136,14 @@ class PodProductLookupPage(QWidget):
         self._results_label.setStyleSheet("color: #cdd6f4; font-size: 13px; padding: 12px;")
         self._analyze_btn.setEnabled(True)
         self._worker = None
+        try:
+            SearchHistory.instance().log(
+                tool="POD Product Lookup", action="lookup",
+                query=product_data.get("asin", raw),
+                results=product_data, result_count=1 if product_data.get("title") else 0,
+            )
+        except Exception:
+            pass
 
     def _analyze_niche(self):
         if not self._product_data:
