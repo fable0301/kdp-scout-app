@@ -127,6 +127,7 @@ POD_NAV = [
     ("📌", "Pinterest"),
     ("🔎", "Product Lookup"),
     ("📊", "Market Overview"),
+    ("🎯", "Find For Me"),
 ]
 
 
@@ -325,7 +326,7 @@ class MainWindow(QMainWindow):
             },
             "google": {
                 "label": "  GOOGLE TOOLS",
-                "pages": [("📈", "Trending"), ("📊", "Market Overview"), ("🎯", "Find For Me")],
+                "pages": [("📈", "Trending"), ("📊", "Market Overview")],
             },
             "pinterest": {
                 "label": "  PINTEREST TOOLS",
@@ -334,6 +335,10 @@ class MainWindow(QMainWindow):
             "etsy": {
                 "label": "  ETSY TOOLS",
                 "pages": [("🏷", "Competitors"), ("🔎", "Product Lookup")],
+            },
+            "tools": {
+                "label": "  DISCOVERY TOOLS",
+                "pages": [("🎯", "Find For Me")],
             },
         }
 
