@@ -409,7 +409,7 @@ class MainWindow(QMainWindow):
             from scout import __version__
             version_text = f"v{__version__}"
         except Exception:
-            version_text = "v0.4.0"
+            version_text = "v1.0"
         ver_label = QLabel(f'<a href="https://github.com/hulyx/scout-app">{version_text}</a>')
         ver_label.setOpenExternalLinks(True)
         ver_label.setProperty("class", "sidebar-version")

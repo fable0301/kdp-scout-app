@@ -85,7 +85,7 @@ kdp-scout-app/
 ├── scout_gui.py
 ├── scout_gui.spec           # PyInstaller spec
 ├── scout/
-│   ├── __init__.py              # Version 0.4.9
+│   ├── __init__.py              # Version 1.0
 │   ├── __main__.py              # Entry point
 │   ├── config.py                # Configuration & rate limits
 │   ├── collectors/              # Data collection modules
@@ -124,12 +124,13 @@ This project is a fork/enhancement of the original **KDP Scout** by [rxpelle](ht
 
 ### What's new in this fork:
 
-**v0.4.9 (Current):**
+**v1.0 (Current):**
 - ✅ **POD Mode Complete** — Full Print-on-Demand interface with 9 tools
 - ✅ **Dual Logos** — Blue KDP logo / Purple POD logo (click to switch modes)
-- ✅ **Version Link** — Click version number (v0.4.9) to open GitHub repo
+- ✅ **Version Link** — Click version number (v1.0) to open GitHub repo
 - ✅ **Larger Logos** — Now 68×68px for better visibility
 - ✅ **POD Workers** — Specialized PodMineAmazonWorker, PodProductLookupAmazonWorker
+- ✅ **Find For Me v2.0** — Complete rewrite with velocity-based trend detection, parallel pipeline, and dynamic seed generation from TikTok & Reddit
 
 **v0.4.0-v0.4.8:**
 - ✅ **POD Support Added** — Amazon Merch, Etsy, Redbubble, Pinterest integration
