@@ -119,8 +119,8 @@ class PodFindForMePage(QWidget):
             category=category,
         )
         
-        # Move worker to this thread's event loop to ensure proper lifecycle
-        self._worker.moveToThread(self._worker.thread())
+        # Store worker reference to prevent garbage collection
+        self._find_worker = self._worker
         
         self._worker.status.connect(self._progress.set_status)
         self._worker.progress.connect(self._progress.set_progress)
@@ -142,7 +142,18 @@ class PodFindForMePage(QWidget):
             self._table.load_data([])
             self._progress.set_status("No profitable niches found. Try different parameters.")
 
-        self._worker = None
+        # Keep worker reference but disconnect signals to prevent issues
+        if self._worker:
+            try:
+                self._worker.status.disconnect()
+                self._worker.progress.disconnect()
+                self._worker.log.disconnect()
+                self._worker.finished_with_result.disconnect()
+                self._worker.error.disconnect()
+            except Exception:
+                pass
+            # Don't set to None immediately - let Python GC handle it
+            # self._worker = None
 
     def _analyze_selected(self):
         row = self._table.get_selected_row()
