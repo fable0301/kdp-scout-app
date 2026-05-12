@@ -301,7 +301,17 @@ class PodNicheAnalyzerWorker(BaseWorker):
 
 
 class PodFindForMeWorker(BaseWorker):
-    """Automatically discover profitable POD niches from seed categories."""
+    """Automatically discover profitable POD niches from seed categories.
+
+    3-phase parallel pipeline:
+      Phase 1 (6 threads)   — Mine Merch Autocomplete + Google Suggest per seed
+      Phase 2 (10 threads)  — Enrich top 60 candidates with Etsy + Redbubble
+      Phase 3 (1 thread)    — Google Trends for top 20 (rate-limited, 3s delay)
+    """
+
+    PHASE1_THREADS = 6
+    PHASE2_THREADS = 10
+    PHASE3_THREADS = 1
 
     def __init__(self, product_type="all", competition_level="medium", category="all", parent=None):
         super().__init__(parent)
@@ -312,32 +322,215 @@ class PodFindForMeWorker(BaseWorker):
     def run_task(self):
         self.status.emit("Discovering profitable niches...")
         from scout.pod_seeds import get_all_seeds
-        seeds = get_all_seeds(category=self.category, limit_per_category=4)
-        self.log.emit(f"Analyzing {len(seeds)} seed niches...")
+        seeds = get_all_seeds(category=self.category, limit_per_category=6)
+        if not seeds:
+            self.log.emit("No seed keywords found for this category!")
+            return []
+        self.log.emit(f"Phase 1: Mining {len(seeds)} seeds...")
 
-        results = []
-        total = len(seeds)
-        for i, seed in enumerate(seeds):
-            if self.is_cancelled:
-                break
-            self.log.emit(f"Analyzing: {seed}")
-            try:
-                analyzer = PodNicheAnalyzerWorker(seed, "all")
-                result = analyzer.run_task()
-                # Filter by competition level
-                comp = result.get("competition_score", 0.5)
-                if self.competition_level == "low" and comp < 0.6:
-                    continue
-                if self.competition_level == "high" and comp > 0.4:
-                    continue
-                results.append(result)
-            except Exception as e:
-                self.log.emit(f"Error on '{seed}': {e}")
-            self.progress.emit(int((i + 1) / total * 100), 100)
+        # ── Phase 1: Mine seeds (Merch + Google Suggest) ───────────
+        candidates = {}
+        done = 0
+        with ThreadPoolExecutor(max_workers=self.PHASE1_THREADS) as pool:
+            fut_map = {pool.submit(self._mine_seed, s): s for s in seeds}
+            for f in as_completed(fut_map):
+                if self.is_cancelled:
+                    break
+                done += 1
+                self.progress.emit(int(done / len(seeds) * 25), 100)
+                try:
+                    for kw in f.result():
+                        text = kw.get("keyword", "").strip().lower()
+                        if text and text not in candidates:
+                            candidates[text] = kw
+                except Exception as e:
+                    self.log.emit(f"Mine error on '{fut_map[f]}': {e}")
 
-        results.sort(key=lambda x: x.get("global_score", 0), reverse=True)
-        self.log.emit(f"Found {len(results)} niches — showing top 20")
-        return results[:20]
+        if self.is_cancelled:
+            return []
+        self.log.emit(f"Phase 1: {len(candidates)} unique keywords")
+
+        # ── Phase 2: Enrich top candidates by heuristic ────────────
+        kw_list = list(candidates.values())
+        # Heuristic pre-score to rank candidates without network calls
+        for c in kw_list:
+            mp = c.get("merch_position")
+            merch = max(0.0, 1.0 - (mp or 50) / 50) if mp else 0.3
+            gs = min(1.0, c.get("google_suggest_count", 0) / 5.0)
+            c["_heuristic"] = merch * 0.6 + gs * 0.4
+        kw_list.sort(key=lambda x: x.get("_heuristic", 0), reverse=True)
+        # Only enrich the top N candidates to keep total time reasonable
+        top_kw = kw_list[:60]
+        self.log.emit(f"Phase 2: Enriching top {len(top_kw)} keywords with Etsy + Redbubble...")
+
+        enriched = []
+        done = 0
+        failed_enrich = 0
+        with ThreadPoolExecutor(max_workers=self.PHASE2_THREADS) as pool:
+            fut_map = {pool.submit(self._enrich, d): d.get("keyword", "") for d in top_kw}
+            for f in as_completed(fut_map):
+                if self.is_cancelled:
+                    break
+                done += 1
+                pct = 25 + int(done / len(top_kw) * 40)
+                self.progress.emit(min(pct, 64), 100)
+                try:
+                    r = f.result()
+                    if r:
+                        enriched.append(r)
+                    else:
+                        failed_enrich += 1
+                except Exception as e:
+                    failed_enrich += 1
+                    self.log.emit(f"Enrich error on '{fut_map[f]}': {e}")
+
+        if self.is_cancelled:
+            return []
+        self.log.emit(f"Phase 2: {len(enriched)} ok, {failed_enrich} failed")
+
+        # Initial score and rank
+        for r in enriched:
+            r["global_score"] = self._compute_score(r)
+        enriched.sort(key=lambda x: x.get("global_score", 0), reverse=True)
+        top = enriched[:30]
+
+        # ── Phase 3: Google Trends (single-thread, rate-limited) ───
+        self.status.emit(f"Phase 3: Google Trends for top {len(top)} (rate-limited)...")
+        done = 0
+        import time
+        with ThreadPoolExecutor(max_workers=self.PHASE3_THREADS) as pool:
+            fut_map = {pool.submit(self._add_trends_rl, r): r.get("niche", "") for r in top}
+            for f in as_completed(fut_map):
+                if self.is_cancelled:
+                    break
+                done += 1
+                pct = 65 + int(done / len(top) * 30)
+                self.progress.emit(min(pct, 95), 100)
+                f.result()
+
+        if self.is_cancelled:
+            return []
+
+        # Re-score with trends data and filter by competition level
+        for r in enriched:
+            r["global_score"] = self._compute_score(r)
+        enriched.sort(key=lambda x: x.get("global_score", 0), reverse=True)
+
+        filtered = self._apply_competition_filter(enriched)
+
+        self.progress.emit(100, 100)
+        self.log.emit(f"Found {len(filtered)} niches — showing top 20")
+        return filtered[:20]
+
+    def _mine_seed(self, seed):
+        """Mine one seed from Merch Autocomplete + Google Suggest."""
+        kw_map = {}
+        try:
+            for i, m in enumerate(pod_merch_autocomplete.mine_merch_autocomplete(seed, depth=2)):
+                text = (m.get("keyword") or "").strip().lower()
+                if text:
+                    kw_map[text] = {
+                        "keyword": text,
+                        "niche": text,
+                        "merch_position": i + 1,
+                        "google_suggest_count": 0,
+                        "etsy_competition": 0,
+                        "rb_competition": 0,
+                        "etsy_avg_price": 0.0,
+                        "rb_avg_price": 0.0,
+                        "google_trends_avg": 0,
+                        "google_trends_trend": "",
+                    }
+        except Exception:
+            pass
+        try:
+            for g in pod_google_suggest.get_suggestions(seed):
+                text = (g.get("suggestion") or "").strip().lower()
+                if text:
+                    if text in kw_map:
+                        kw_map[text]["google_suggest_count"] += 1
+                    else:
+                        kw_map[text] = {
+                            "keyword": text,
+                            "niche": text,
+                            "merch_position": None,
+                            "google_suggest_count": 1,
+                            "etsy_competition": 0,
+                            "rb_competition": 0,
+                            "etsy_avg_price": 0.0,
+                            "rb_avg_price": 0.0,
+                            "google_trends_avg": 0,
+                            "google_trends_trend": "",
+                        }
+        except Exception:
+            pass
+        return list(kw_map.values())
+
+    def _enrich(self, kw_dict):
+        """Add Etsy + Redbubble competition data to a keyword dict."""
+        kw = (kw_dict.get("keyword") or "").strip()
+        if not kw:
+            return None
+        r = dict(kw_dict)
+        try:
+            ed = pod_etsy_scraper.scrape_etsy_search(kw)
+            r["etsy_competition"] = ed.get("competition_count", 0)
+            r["etsy_avg_price"] = ed.get("avg_price", 0.0)
+        except Exception:
+            pass
+        try:
+            rd = pod_redbubble_scraper.scrape_redbubble_search(kw)
+            r["rb_competition"] = rd.get("competition_count", 0)
+            r["rb_avg_price"] = rd.get("avg_price", 0.0)
+        except Exception:
+            pass
+        return r
+
+    def _add_trends_rl(self, result):
+        """Add Google Trends data in-place with 3s rate-limit delay."""
+        kw = result.get("niche", "")
+        if not kw:
+            return
+        import time
+        td = pod_google_trends.get_trends(kw)
+        interest = td.get("interest_over_time", {})
+        vals = [v for v in interest.values() if isinstance(v, (int, float))]
+        if vals:
+            result["google_trends_avg"] = int(sum(vals) / len(vals))
+            rising = td.get("related_queries_rising") or []
+            result["google_trends_trend"] = "rising" if rising else "stable"
+        time.sleep(3)
+
+    def _compute_score(self, r):
+        """Compute global opportunity score (0-1)."""
+        ec = min(1.0, r.get("etsy_competition", 0) / 50000)
+        rc = min(1.0, r.get("rb_competition", 0) / 50000)
+        comp = 1.0 - (ec * 0.5 + rc * 0.5)
+        trend = min(1.0, r.get("google_trends_avg", 0) / 100.0)
+        gs = min(1.0, r.get("google_suggest_count", 0) / 10.0)
+        mp = r.get("merch_position")
+        merch = max(0.0, 1.0 - (mp or 50) / 50) if mp else 0.3
+        bonus = 0.1 if r.get("google_trends_trend") == "rising" else 0.0
+        return round(min(1.0, comp * 0.35 + trend * 0.25 + gs * 0.20 + merch * 0.20 + bonus), 3)
+
+    def _apply_competition_filter(self, results):
+        """Filter by desired competition level."""
+        level = self.competition_level
+        if level == "any":
+            return results
+        filtered = []
+        for r in results:
+            ec = min(1.0, r.get("etsy_competition", 0) / 50000)
+            rc = min(1.0, r.get("rb_competition", 0) / 50000)
+            comp_score = 1.0 - (ec * 0.5 + rc * 0.5)
+            if level == "low" and comp_score < 0.6:
+                continue
+            if level == "high" and comp_score > 0.4:
+                continue
+            if level == "medium" and (comp_score < 0.3 or comp_score > 0.7):
+                continue
+            filtered.append(r)
+        return filtered
 
 
 class PodCompetitorsWorker(BaseWorker):

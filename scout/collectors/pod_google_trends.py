@@ -72,8 +72,7 @@ def get_trends(keyword: str, timeframe: str = "today 12-m") -> dict:
             "avg_interest": avg_interest,
         }
     
-    except Exception as e:
-        print(f"Error getting Google Trends: {e}")
+    except Exception:
         return {
             "interest_over_time": {},
             "related_queries_top": [],
@@ -113,8 +112,7 @@ def compare_trends(keywords: list, timeframe: str = "today 12-m") -> dict:
         
         return {"comparison": comparison}
     
-    except Exception as e:
-        print(f"Error comparing trends: {e}")
+    except Exception:
         return {"comparison": []}
 
 
