@@ -1,4 +1,10 @@
 ```
 # Executable/binary files
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+*.out
 scout-app
 ```
