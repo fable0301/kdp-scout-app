@@ -123,8 +123,7 @@ POD_NAV = [
     ("📈", "Trending"),
     ("🔬", "Niche Analyzer"),
     ("🏷", "Competitors"),
-    ("🌱", "Seeds"),
-    ("📌", "Pinterest"),
+    ("📌", "Pinterest Explorer"),
     ("🔎", "Product Lookup"),
     ("📊", "Market Overview"),
     ("🎯", "Find For Me"),
@@ -330,7 +329,7 @@ class MainWindow(QMainWindow):
             },
             "pinterest": {
                 "label": "  PINTEREST TOOLS",
-                "pages": [("📌", "Pinterest"), ("🌱", "Seeds")],
+                "pages": [("📌", "Pinterest Explorer")],
             },
             "etsy": {
                 "label": "  ETSY TOOLS",
@@ -717,8 +716,7 @@ class MainWindow(QMainWindow):
             from scout.gui.pages.pod_niche_analyzer_page import PodNicheAnalyzerPage
             from scout.gui.pages.pod_find_for_me_page import PodFindForMePage
             from scout.gui.pages.pod_competitors_page import PodCompetitorsPage
-            from scout.gui.pages.pod_seeds_page import PodSeedsPage
-            from scout.gui.pages.pod_pinterest_page import PodPinterestPage
+            from scout.gui.pages.pod_pinterest_explorer_page import PodPinterestExplorerPage
             from scout.gui.pages.pod_product_lookup_page import PodProductLookupPage
             from scout.gui.pages.pod_market_overview_page import PodMarketOverviewPage
 
@@ -728,8 +726,7 @@ class MainWindow(QMainWindow):
                 "Niche Analyzer": PodNicheAnalyzerPage,
                 "Find For Me": PodFindForMePage,
                 "Competitors": PodCompetitorsPage,
-                "Seeds": PodSeedsPage,
-                "Pinterest": PodPinterestPage,
+                "Pinterest Explorer": PodPinterestExplorerPage,
                 "Product Lookup": PodProductLookupPage,
                 "Market Overview": PodMarketOverviewPage,
             }
@@ -848,7 +845,7 @@ class MainWindow(QMainWindow):
         first_page = {
             "amazon":    "Keywords",
             "google":    "Trending",
-            "pinterest": "Pinterest",
+            "pinterest": "Pinterest Explorer",
             "etsy":      "Competitors",
         }.get(source, "Keywords")
         self._switch_pod_page(first_page)

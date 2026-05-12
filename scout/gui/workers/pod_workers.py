@@ -950,3 +950,202 @@ class PodSeedsWorker(BaseWorker):
         self.log.emit(f"Done: {len(enriched)} seeds scored by trend potential")
         self.status.emit(f"Generated {len(enriched)} scored seeds")
         return enriched
+
+
+class PodPinterestExplorerWorker(BaseWorker):
+    """Unified Pinterest explorer: seed discovery + Pinterest data enrichment."""
+
+    TREND_WORDS = [
+        "gift", "idea", "design", "decor", "wall art",
+        "style", "love", "cute", "funny", "custom",
+        "personalized", "room", "home", "aesthetic",
+        "inspiration", "minimalist", "boho", "vintage",
+        "retro", "modern", "unique", "cool", "best",
+        "gift for", "perfect", "trendy", "chic", "rustic",
+        "farmhouse", "coastal", "abstract", "geometric",
+    ]
+
+    PRODUCT_PREFIXES = [
+        "t-shirt", "mug", "sticker", "poster", "hoodie",
+        "gift for", "design", "funny",
+    ]
+
+    def __init__(self, category="all", seed=None, limit_per_category=10,
+                 mode="all", parent=None):
+        super().__init__(parent)
+        self.category = category
+        self.seed = seed
+        self.limit_per_category = limit_per_category
+        self.mode = mode  # all, suggestions, boards, trending, seeds
+
+    def _heuristic_trend_score(self, keyword):
+        kw = keyword.lower()
+        words = kw.split()
+        score = 0.0
+
+        wc = len(words)
+        if wc >= 5:
+            score += 30
+        elif wc == 4:
+            score += 25
+        elif wc == 3:
+            score += 20
+        elif wc == 2:
+            score += 10
+        else:
+            score += 5
+
+        trend_hits = sum(1 for w in self.TREND_WORDS if w in kw)
+        score += min(50, trend_hits * 10)
+
+        has_prefix = any(kw.startswith(p) or kw.endswith(p) for p in self.PRODUCT_PREFIXES)
+        if has_prefix:
+            score += 20
+
+        return round(min(100, score), 1)
+
+    def run_task(self):
+        from scout.pod_seeds import get_all_seeds, expand_seed
+
+        self.status.emit("Building keyword list...")
+
+        # ── Phase 1: Build base keywords ──────────────
+        if self.seed:
+            # Direct seed mode: use seed + product prefixes
+            base_kws = expand_seed(self.seed, depth=2)
+            self.log.emit(f"Direct seed '{self.seed}' expanded to {len(base_kws)} keywords")
+            cat_label = self.seed.capitalize()
+        else:
+            # Category mode: get seeds from category
+            seeds = get_all_seeds(category=self.category, limit_per_category=self.limit_per_category)
+            if not seeds:
+                self.log.emit("No seeds found for this category")
+                return []
+            base_kws = []
+            for s in seeds:
+                base_kws.extend(expand_seed(s, depth=2))
+            cat_label = self.category.capitalize() if self.category != "all" else "Mixed"
+            self.log.emit(f"Category '{self.category}': {len(seeds)} seeds → {len(base_kws)} keywords")
+
+        self.status.emit("Computing trend scores...")
+
+        # ── Phase 2: Heuristic scores ──
+        enriched_rows = []
+        for i, kw in enumerate(base_kws):
+            enriched_rows.append({
+                "keyword": kw,
+                "type": "seed",
+                "trend_score": self._heuristic_trend_score(kw),
+                "pinterest_pins": 0,
+                "followers": 0,
+                "frequency": 0,
+                "board_name": "",
+                "category": cat_label,
+                "source": "generated",
+            })
+            self.progress.emit(i + 1, len(base_kws))
+
+        # ── Phase 3: Pinterest enrichment (only for seed mode) ──
+        all_suggestions = []
+        all_boards = []
+        all_trending = []
+        seen_keywords = set()
+
+        if self.seed:
+            self.status.emit("Fetching Pinterest data...")
+            from scout.collectors.pod_pinterest_scraper import scrape_pinterest_search
+            try:
+                pdata = scrape_pinterest_search(self.seed, mode="all")
+                pc = pdata.get("pin_count_estimate", 0)
+
+                # Update seed rows with real Pinterest data
+                if pc > 0:
+                    for row in enriched_rows:
+                        row["pinterest_pins"] = pc
+                        pin_score = min(pc / 100000, 1.0) * 50
+                        board_score = sum(
+                            b.get("followers", 0) for b in pdata.get("top_boards", [])
+                        )
+                        row["followers"] = board_score
+                        board_norm = min(board_score / 50000, 1.0) * 30
+                        real_score = pin_score + board_norm
+                        row["trend_score"] = round(
+                            row["trend_score"] * 0.3 + real_score * 0.7, 1
+                        )
+
+                for sug in pdata.get("suggestions", []):
+                    st = sug.get("suggestion", "")
+                    if st and st not in seen_keywords:
+                        seen_keywords.add(st)
+                        all_suggestions.append({
+                            "keyword": st,
+                            "type": "suggest",
+                            "trend_score": self._heuristic_trend_score(st),
+                            "pinterest_pins": 0,
+                            "followers": 0,
+                            "frequency": sug.get("frequency", 0),
+                            "board_name": "",
+                            "category": cat_label,
+                            "source": "pinterest_suggest",
+                        })
+                for board in pdata.get("top_boards", []):
+                    bn = board.get("board_name", "")
+                    if bn and bn not in seen_keywords:
+                        seen_keywords.add(bn)
+                        all_boards.append({
+                            "keyword": bn,
+                            "type": "board",
+                            "trend_score": self._heuristic_trend_score(bn),
+                            "pinterest_pins": board.get("pin_count", 0),
+                            "followers": board.get("followers", 0),
+                            "frequency": 0,
+                            "board_name": bn,
+                            "category": cat_label,
+                            "source": "pinterest_board",
+                        })
+                for trend in pdata.get("trending", []):
+                    tr = trend.get("trend", "")
+                    if tr and tr not in seen_keywords:
+                        seen_keywords.add(tr)
+                        all_trending.append({
+                            "keyword": tr,
+                            "type": "trending",
+                            "trend_score": self._heuristic_trend_score(tr),
+                            "pinterest_pins": 0,
+                            "followers": 0,
+                            "frequency": 0,
+                            "board_name": "",
+                            "category": cat_label,
+                            "source": "pinterest_trending",
+                        })
+                self.log.emit(
+                    f"Pinterest: {len(all_suggestions)} suggests, "
+                    f"{len(all_boards)} boards, {len(all_trending)} trending"
+                )
+            except Exception as e:
+                self.log.emit(f"Pinterest enrichment skipped: {e}")
+
+        # ── Phase 3: Combine & filter by mode ─────────
+        self.status.emit("Combining results...")
+
+        mode = self.mode.lower()
+        combined = []
+        if mode in ("all", "seeds"):
+            combined.extend(enriched_rows)
+        if mode in ("all", "suggest", "suggestions"):
+            combined.extend(all_suggestions)
+        if mode in ("all", "boards"):
+            combined.extend(all_boards)
+        if mode in ("all", "trending"):
+            combined.extend(all_trending)
+
+        combined.sort(key=lambda x: x.get("trend_score", 0), reverse=True)
+
+        self.log.emit(
+            f"Results: {len(enriched_rows)} seeds, "
+            f"{len(all_suggestions)} suggestions, "
+            f"{len(all_boards)} boards, "
+            f"{len(all_trending)} trending"
+        )
+        self.status.emit(f"Found {len(combined)} results")
+        return combined
