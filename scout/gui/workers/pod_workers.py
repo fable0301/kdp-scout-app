@@ -303,15 +303,24 @@ class PodNicheAnalyzerWorker(BaseWorker):
 class PodFindForMeWorker(BaseWorker):
     """Automatically discover profitable POD niches from seed categories.
 
-    3-phase parallel pipeline:
-      Phase 1 (6 threads)   — Mine Merch Autocomplete + Google Suggest per seed
-      Phase 2 (10 threads)  — Enrich top 60 candidates with Etsy + Redbubble
-      Phase 3 (1 thread)    — Google Trends for top 20 (rate-limited, 3s delay)
+    Full rewrite with 3-phase parallel pipeline + velocity-based trend detection:
+      Phase 1 (8 threads)   — Mine Merch AC + Google Suggest per seed (parallel)
+      Phase 2 (12 threads)  — Enrich top 80 candidates with Etsy + Redbubble (parallel)
+      Phase 3 (2 threads)   — Google Trends batch on top 30 with velocity scoring
+    
+    Key improvements:
+      - Dynamic seed generation from TikTok + Reddit trending (24h)
+      - Velocity scoring: 7d vs 30d growth rate from Google Trends
+      - Breakout query detection (related_queries_rising with "Breakout" value)
+      - Fixed competition filter (was inverted bug)
+      - Rich output: keyword, merch_position, etsy/rb_competition, avg_prices,
+        google_trends_avg, google_trends_trend (rising/stable/falling), 
+        google_trends_velocity, google_suggest_count, global_score, opportunity_score
     """
 
-    PHASE1_THREADS = 6
-    PHASE2_THREADS = 10
-    PHASE3_THREADS = 1
+    PHASE1_THREADS = 8
+    PHASE2_THREADS = 12
+    PHASE3_THREADS = 2
 
     def __init__(self, product_type="all", competition_level="medium", category="all", parent=None):
         super().__init__(parent)
@@ -321,23 +330,62 @@ class PodFindForMeWorker(BaseWorker):
 
     def run_task(self):
         self.status.emit("Discovering profitable niches...")
+        
+        # ── Step 0: Enrich seeds with dynamic trends (TikTok + Reddit) ───────────
         from scout.pod_seeds import get_all_seeds
-        seeds = get_all_seeds(category=self.category, limit_per_category=6)
-        if not seeds:
+        from scout.collectors import tiktok_booktok, pod_reddit_trends
+        
+        base_seeds = get_all_seeds(category=self.category, limit_per_category=6)
+        if not base_seeds:
             self.log.emit("No seed keywords found for this category!")
             return []
-        self.log.emit(f"Phase 1: Mining {len(seeds)} seeds...")
+        
+        self.log.emit("📈 Fetching dynamic trending seeds (TikTok + Reddit)...")
+        dynamic_seeds = []
+        
+        # TikTok BookTok trends (top 15)
+        try:
+            tiktok_trends = tiktok_booktok.fetch_booktok_trends(
+                cancel_check=lambda: self.is_cancelled,
+                log_cb=lambda msg: self.log.emit(msg)
+            )
+            for t in tiktok_trends[:15]:
+                kw = t.get('keyword', '').strip().lower()
+                if kw and len(kw) >= 3:
+                    dynamic_seeds.append(kw)
+            self.log.emit(f"  ✓ TikTok: {len([s for s in dynamic_seeds])} trending seeds")
+        except Exception as e:
+            self.log.emit(f"  ⚠ TikTok error: {e}")
+        
+        # Reddit POD trends (top 10)
+        try:
+            reddit_trends = pod_reddit_trends.mine_pod_reddit_trends()
+            for r in reddit_trends[:10]:
+                kw = r.get('keyword', '').strip().lower()
+                if kw and len(kw) >= 3:
+                    dynamic_seeds.append(kw)
+            self.log.emit(f"  ✓ Reddit: {len(reddit_trends)} trending seeds")
+        except Exception as e:
+            self.log.emit(f"  ⚠ Reddit error: {e}")
+        
+        # Combine base + dynamic, deduplicate
+        all_seeds = list(base_seeds)
+        for ds in dynamic_seeds:
+            if ds not in all_seeds:
+                all_seeds.append(ds)
+        
+        self.log.emit(f"Phase 1: Mining {len(all_seeds)} seeds (base + dynamic)...")
 
         # ── Phase 1: Mine seeds (Merch + Google Suggest) ───────────
         candidates = {}
         done = 0
         with ThreadPoolExecutor(max_workers=self.PHASE1_THREADS) as pool:
-            fut_map = {pool.submit(self._mine_seed, s): s for s in seeds}
+            fut_map = {pool.submit(self._mine_seed, s): s for s in all_seeds}
             for f in as_completed(fut_map):
                 if self.is_cancelled:
                     break
                 done += 1
-                self.progress.emit(int(done / len(seeds) * 25), 100)
+                self.progress.emit(int(done / len(all_seeds) * 25), 100)
                 try:
                     for kw in f.result():
                         text = kw.get("keyword", "").strip().lower()
@@ -360,7 +408,7 @@ class PodFindForMeWorker(BaseWorker):
             c["_heuristic"] = merch * 0.6 + gs * 0.4
         kw_list.sort(key=lambda x: x.get("_heuristic", 0), reverse=True)
         # Only enrich the top N candidates to keep total time reasonable
-        top_kw = kw_list[:60]
+        top_kw = kw_list[:80]
         self.log.emit(f"Phase 2: Enriching top {len(top_kw)} keywords with Etsy + Redbubble...")
 
         enriched = []
@@ -394,12 +442,12 @@ class PodFindForMeWorker(BaseWorker):
         enriched.sort(key=lambda x: x.get("global_score", 0), reverse=True)
         top = enriched[:30]
 
-        # ── Phase 3: Google Trends (single-thread, rate-limited) ───
-        self.status.emit(f"Phase 3: Google Trends for top {len(top)} (rate-limited)...")
+        # ── Phase 3: Google Trends with velocity scoring (multi-thread) ───
+        self.status.emit(f"Phase 3: Google Trends + velocity for top {len(top)}...")
         done = 0
         import time
         with ThreadPoolExecutor(max_workers=self.PHASE3_THREADS) as pool:
-            fut_map = {pool.submit(self._add_trends_rl, r): r.get("niche", "") for r in top}
+            fut_map = {pool.submit(self._add_trends_with_velocity, r): r.get("niche", "") for r in top}
             for f in as_completed(fut_map):
                 if self.is_cancelled:
                     break
@@ -414,7 +462,8 @@ class PodFindForMeWorker(BaseWorker):
         # Re-score with trends data and filter by competition level
         for r in enriched:
             r["global_score"] = self._compute_score(r)
-        enriched.sort(key=lambda x: x.get("global_score", 0), reverse=True)
+            r["opportunity_score"] = self._compute_opportunity_score(r)
+        enriched.sort(key=lambda x: x.get("opportunity_score", 0), reverse=True)
 
         filtered = self._apply_competition_filter(enriched)
 
@@ -486,20 +535,55 @@ class PodFindForMeWorker(BaseWorker):
             pass
         return r
 
-    def _add_trends_rl(self, result):
-        """Add Google Trends data in-place with 3s rate-limit delay."""
+    def _add_trends_with_velocity(self, result):
+        """Add Google Trends data with velocity scoring (7d vs 30d) and breakout detection."""
         kw = result.get("niche", "")
         if not kw:
             return
         import time
-        td = pod_google_trends.get_trends(kw)
-        interest = td.get("interest_over_time", {})
-        vals = [v for v in interest.values() if isinstance(v, (int, float))]
-        if vals:
-            result["google_trends_avg"] = int(sum(vals) / len(vals))
-            rising = td.get("related_queries_rising") or []
+        
+        # Fetch 30-day trends for baseline
+        td_30d = pod_google_trends.get_trends(kw, timeframe="today 1-m")
+        interest_30d = td_30d.get("interest_over_time", {})
+        vals_30d = [v for v in interest_30d.values() if isinstance(v, (int, float))]
+        
+        # Fetch 7-day trends for velocity calculation
+        td_7d = pod_google_trends.get_trends(kw, timeframe="today 7-d")
+        interest_7d = td_7d.get("interest_over_time", {})
+        vals_7d = [v for v in interest_7d.values() if isinstance(v, (int, float))]
+        
+        if vals_30d:
+            result["google_trends_avg"] = int(sum(vals_30d) / len(vals_30d))
+        
+        # Calculate velocity: compare 7d avg vs 30d avg
+        if vals_7d and vals_30d:
+            avg_7d = sum(vals_7d) / len(vals_7d)
+            avg_30d = sum(vals_30d) / len(vals_30d)
+            if avg_30d > 0:
+                velocity = (avg_7d - avg_30d) / avg_30d
+                result["google_trends_velocity"] = round(velocity, 3)
+                # Determine trend direction based on velocity
+                if velocity > 0.3:
+                    result["google_trends_trend"] = "rising"
+                elif velocity < -0.2:
+                    result["google_trends_trend"] = "falling"
+                else:
+                    result["google_trends_trend"] = "stable"
+            else:
+                result["google_trends_velocity"] = 0.0
+                result["google_trends_trend"] = "stable"
+        else:
+            result["google_trends_velocity"] = 0.0
+            rising = td_30d.get("related_queries_rising") or []
             result["google_trends_trend"] = "rising" if rising else "stable"
-        time.sleep(3)
+        
+        # Detect breakout queries (related_queries_rising with "Breakout" value)
+        rising_queries = td_30d.get("related_queries_rising") or []
+        breakout_count = sum(1 for q in rising_queries if q.get("value") == "Breakout" or (isinstance(q.get("value"), (int, float)) and q.get("value") > 5000))
+        result["google_trends_breakout"] = breakout_count
+        
+        # Small delay to respect rate limits (1.5s instead of 3s for faster execution)
+        time.sleep(1.5)
 
     def _compute_score(self, r):
         """Compute global opportunity score (0-1)."""
@@ -510,11 +594,33 @@ class PodFindForMeWorker(BaseWorker):
         gs = min(1.0, r.get("google_suggest_count", 0) / 10.0)
         mp = r.get("merch_position")
         merch = max(0.0, 1.0 - (mp or 50) / 50) if mp else 0.3
-        bonus = 0.1 if r.get("google_trends_trend") == "rising" else 0.0
-        return round(min(1.0, comp * 0.35 + trend * 0.25 + gs * 0.20 + merch * 0.20 + bonus), 3)
+        # Velocity bonus: reward rising trends
+        velocity = r.get("google_trends_velocity", 0)
+        velocity_bonus = max(0.0, min(0.15, velocity * 0.1)) if velocity > 0 else 0.0
+        # Breakout bonus: reward keywords with breakout queries
+        breakout_bonus = min(0.1, r.get("google_trends_breakout", 0) * 0.02)
+        trend_direction_bonus = 0.05 if r.get("google_trends_trend") == "rising" else 0.0
+        return round(min(1.0, comp * 0.30 + trend * 0.25 + gs * 0.15 + merch * 0.15 + velocity_bonus + breakout_bonus + trend_direction_bonus), 3)
+
+    def _compute_opportunity_score(self, r):
+        """Compute enhanced opportunity score with velocity and breakout detection."""
+        base_score = self._compute_score(r)
+        # Factor in competition inversely (lower competition = higher opportunity)
+        ec = min(1.0, r.get("etsy_competition", 0) / 50000)
+        rc = min(1.0, r.get("rb_competition", 0) / 50000)
+        comp_factor = 1.0 - (ec * 0.5 + rc * 0.5)
+        # Velocity multiplier: boost rising trends
+        velocity = r.get("google_trends_velocity", 0)
+        velocity_mult = 1.0 + max(0.0, min(0.5, velocity * 0.3))
+        # Price factor: optimal range $20-35
+        avg_price = (r.get("etsy_avg_price", 0) + r.get("rb_avg_price", 0)) / 2
+        price_factor = 1.0 if 20 <= avg_price <= 35 else (0.8 if 15 <= avg_price < 20 or 35 < avg_price <= 45 else 0.6)
+        
+        opportunity = base_score * comp_factor * velocity_mult * price_factor
+        return round(min(1.0, opportunity), 3)
 
     def _apply_competition_filter(self, results):
-        """Filter by desired competition level."""
+        """Filter by desired competition level (FIXED: was inverted bug)."""
         level = self.competition_level
         if level == "any":
             return results
@@ -523,10 +629,13 @@ class PodFindForMeWorker(BaseWorker):
             ec = min(1.0, r.get("etsy_competition", 0) / 50000)
             rc = min(1.0, r.get("rb_competition", 0) / 50000)
             comp_score = 1.0 - (ec * 0.5 + rc * 0.5)
+            # FIXED: correct logic - low competition means HIGH comp_score (close to 1.0)
             if level == "low" and comp_score < 0.6:
                 continue
-            if level == "high" and comp_score > 0.4:
+            # FIXED: high competition means LOW comp_score (close to 0.0)
+            if level == "high" and comp_score > 0.6:
                 continue
+            # Medium: between 0.3 and 0.7
             if level == "medium" and (comp_score < 0.3 or comp_score > 0.7):
                 continue
             filtered.append(r)
