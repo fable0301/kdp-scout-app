@@ -1,6 +1,10 @@
 ```
-# Executable/binary files
-scout-app
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.class
 *.exe
 *.dll
 *.so
@@ -8,16 +12,15 @@ scout-app
 *.out
 
 # Dependencies
-node_modules/
 .venv/
 venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
+node_modules/
 dist/
 build/
 target/
 .gradle/
+.mypy_cache/
+.pytest_cache/
 
 # Logs and temp files
 *.log
@@ -34,7 +37,7 @@ target/
 .vscode/
 .idea/
 
-# OS
+# System files
 .DS_Store
 Thumbs.db
 
@@ -62,4 +65,8 @@ htmlcov/
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
