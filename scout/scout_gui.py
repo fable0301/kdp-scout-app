@@ -8,6 +8,9 @@ Usage:
 Or after pip install:
     kdp-scout-gui
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scout.gui.app import main
 
 if __name__ == "__main__":
